@@ -31,6 +31,9 @@ code, not a reimplementation:
   `utils.c/.h`, `defines.h`, `platform.h`, `sdl.h`, `fn_action.h`,
   `msettings.h` — the GFX blit path, theme/palette loader, fonts and asset
   atlas that the panel uses.
+- `pak_manifest.c/.h`, `json_lite.c/.h` — NextUI's pak.json reader, used by
+  `tests/test_pak_manifest.c` so this pak's manifest is validated by the same
+  parser the launcher runs.
 - `res/assets@3x.png`, `res/inputs@3x.png`, `res/font2.ttf` — host-test copies
   of NextUI's default atlas and font. The device build reads the real files
   from `/mnt/SDCARD/.system/res`, so a user's installed theme/font is used
@@ -103,7 +106,8 @@ package.
 
 Device-provided, deliberately **not** bundled (the firmware image supplies
 them): glibc, `libSDL2-2.0.so.0` (zlib), `libasound.so.2` (LGPL-2.1),
-`libudev.so.1` (LGPL-2.1), `libz.so.1`, and PulseAudio's private
+`libudev.so.1` (LGPL-2.1), `libz.so.1`, `libsamplerate.so.0` (BSD-2-Clause;
+NextUI stages it in `.system/<platform>/lib`), and PulseAudio's private
 `libpulsecommon-13.99.so` (LGPL-2.1). The device test checklist verifies these
 resolve on a real Brick.
 

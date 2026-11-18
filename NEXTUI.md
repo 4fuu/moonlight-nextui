@@ -224,6 +224,10 @@ through `/bin/sh -c` because they parse CLI stdout.
   native panel is 1024x768.
 - **SD card is FAT32.** Logs and config are small text files; no symlinks are
   used by the pak.
+- **The overlay renderer adds `libsamplerate.so.0` when M2 links it.** It is a
+  NextUI system library (`.system/tg5040/lib`), reached through the
+  `LD_LIBRARY_PATH` the launcher inherits; the pak does not bundle it. The
+  aarch64 CI job links `overlay-smoke` to prove that dependency resolves.
 - **NextUI overlay code is PolyForm Noncommercial.** The pak is free; see
   `docs/THIRD-PARTY.md` before redistributing commercially.
 
