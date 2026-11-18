@@ -196,6 +196,18 @@ static int overlay_bt_set(void* user, int on)
     return overlay_set_toggle("net.bluetooth", on);
 }
 
+static int overlay_can_resume(void* user)
+{
+    (void)user;
+    return 1;
+}
+
+static int overlay_resume(void* user)
+{
+    (void)user;
+    return 1; /* UIOverlay closes the panel on success */
+}
+
 static int overlay_exit_to_desktop(void* user)
 {
     (void)user;
@@ -302,9 +314,11 @@ static int overlay_create(void)
     ApostropheOverlayConfig config;
     memset(&config, 0, sizeof(config));
     config.app_name = "Moonlight";
-    config.capabilities =
-        UI_OVERLAY_CAP_EXIT | UI_OVERLAY_CAP_WIFI | UI_OVERLAY_CAP_BLUETOOTH;
+    config.capabilities = UI_OVERLAY_CAP_RESUME | UI_OVERLAY_CAP_EXIT |
+                          UI_OVERLAY_CAP_WIFI | UI_OVERLAY_CAP_BLUETOOTH;
     config.device = &s_device_hooks;
+    config.can_resume = overlay_can_resume;
+    config.resume = overlay_resume;
     config.exit_to_desktop = overlay_exit_to_desktop;
     config.focus_changed = overlay_focus_changed;
 
