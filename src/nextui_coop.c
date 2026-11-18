@@ -12,12 +12,16 @@
  * client.
  */
 
+/* defines.h/api.h first: on the device Apostrophe pulls in <linux/input.h>,
+ * whose BTN_A macro makes NextUI's defines.h skip its BTN_ID_* enum. Include
+ * the enum before any header that can define that macro. */
+#include "defines.h"
+#include "api.h"
+
 #include "apostrophe.h"
 #include "apostrophe_host.h"
 #include "apostrophe_overlay_host.h"
 
-#include "defines.h"
-#include "api.h"
 #include "nextui_app.h"
 #include "nextui_bridge.h"
 
