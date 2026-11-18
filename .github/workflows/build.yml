@@ -1,0 +1,191 @@
+name: Build Moonlight.pakz
+
+# The host orb has no Docker, so this workflow is the authoritative aarch64
+# build: it cross-compiles the Apostrophe wrapper and the vendored NextUI
+# overlay renderer inside the NextUI toolchain image, then packages the pak
+# with the bundled spruce 2.7.0 engine.
+#
+# host-checks runs the same host build and tests a developer runs locally
+# (scripts/nextui/build.sh host, ctest), plus shellcheck and manifest checks.
+
+on:
+  push:
+    branches:
+      - main
+    paths-ignore:
+      - '**.md'
+  pull_request:
+    paths-ignore:
+      - '**.md'
+  workflow_dispatch:
+
+concurrency:
+  group: moonlight-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host-checks:
+    name: Host build and tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake pkg-config shellcheck zip python3 \
+            libsdl2-dev libsdl2-ttf-dev libsdl2-image-dev libsamplerate0-dev
+
+      - name: Configure and build
+        run: ./scripts/nextui/build.sh host
+
+      - name: Run tests
+        run: ctest --test-dir build-host --output-on-failure
+
+      - name: Validate shell scripts
+        run: |
+          shellcheck -s sh \
+            Tools/tg5040/Moonlight.pak/launch.sh \
+            shim/moonlight \
+            scripts/nextui/*.sh
+          sh -n Tools/tg5040/Moonlight.pak/launch.sh
+          sh -n shim/moonlight
+
+      # The manifest is checked twice: tests/test_pak_manifest.c uses NextUI's
+      # own parser (what the launcher reads), and the Pak Store fields below are
+      # the ones only this repository's packaging depends on.
+      - name: Validate manifests
+        run: |
+          python3 -m json.tool Tools/tg5040/Moonlight.pak/pak.json >/dev/null
+          python3 - <<'PY'
+          import json
+          manifest = json.load(open("Tools/tg5040/Moonlight.pak/pak.json"))
+          for key in ("id", "name", "version", "type", "repo_url", "release_filename", "platforms"):
+              assert key in manifest, f"pak.json missing {key}"
+          assert manifest["type"] == "TOOL", manifest["type"]
+          assert manifest["release_filename"] == "Moonlight.pakz"
+          assert manifest["platforms"] == ["tg5040"], manifest["platforms"]
+          print("pak.json store fields ok:", manifest["id"], manifest["version"])
+          PY
+
+      - name: Upload overlay render
+        uses: actions/upload-artifact@v4
+        with:
+          name: overlay-render
+          path: build-host/overlay-smoke.png
+          if-no-files-found: warn
+
+  tg5040:
+    name: Cross-build Moonlight.pakz
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    container:
+      image: ghcr.io/loveretro/tg5040-toolchain:latest
+    env:
+      JOBS: 4
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Install packaging tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends zip file python3 ca-certificates
+
+      - name: Show toolchain
+        run: |
+          echo "CROSS_TRIPLE=$CROSS_TRIPLE"
+          echo "SYSROOT=$SYSROOT"
+          ${CROSS_TRIPLE}-gcc --version | head -1
+          cmake --version | head -1
+          pkg-config --modversion sdl2
+          # SDL2_ttf/SDL2_image ship as .so stubs without .pc files.
+          ls "${SYSROOT}"/usr/lib/libSDL2_ttf.so "${SYSROOT}"/usr/lib/libSDL2_image.so
+          ls "${SYSROOT}"/usr/lib/libsamplerate.so*
+
+      - name: Cross-build wrapper and overlay
+        run: ./scripts/nextui/build.sh tg5040
+
+      # The pak build compiles the overlay archive but does not link it into a
+      # binary (M2 does that). Linking it here proves the aarch64 closure
+      # resolves -- SDL2_ttf/SDL2_image stubs, libsamplerate, and the platform
+      # seam -- which a compile-only build cannot show.
+      - name: Link the overlay into an aarch64 binary
+        run: |
+          set -e
+          cmake -S . -B build-link \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-tg5040.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMOONLIGHT_PLATFORM=tg5040 \
+            -DNEXTUI_BUILD_TESTS=ON
+          cmake --build build-link --target overlay-smoke --parallel "${JOBS}"
+          ${CROSS_TRIPLE}-readelf -h build-link/overlay-smoke | grep -q 'AArch64'
+          echo "overlay link closure: $(ls -l build-link/overlay-smoke | awk '{print $5}') bytes"
+          ${CROSS_TRIPLE}-readelf -d build-link/overlay-smoke | grep NEEDED
+
+      - name: Package Moonlight.pakz
+        run: ./scripts/nextui/make-pak.sh
+
+      - name: Verify pak layout
+        run: |
+          set -e
+          PAK=dist/Moonlight.pak
+          test -x "$PAK/launch.sh"
+          test -x "$PAK/shim/moonlight"
+          test -x "$PAK/bin/moonlight"
+          test -x "$PAK/moonlight-pak"
+          test -f "$PAK/pak.json"
+          test -d "$PAK/bin/libs"
+          ${CROSS_TRIPLE}-readelf -h "$PAK/moonlight-pak" | grep -q 'AArch64'
+          ${CROSS_TRIPLE}-readelf -h "$PAK/bin/moonlight" | grep -q 'AArch64'
+          # The archive root must be the pak (launch.sh at the root).
+          unzip -l dist/Moonlight.pakz | grep -q ' launch.sh$'
+          echo "bundled engine libs: $(ls "$PAK/bin/libs" | wc -l)"
+          du -sh "$PAK" dist/Moonlight.pakz
+
+      - name: Build summary
+        run: |
+          {
+            echo "### Moonlight tg5040 build"
+            echo
+            echo "- wrapper: $(ls -lh build-nextui/moonlight-pak | awk '{print $5}')"
+            echo "- engine: $(ls -lh engine/bin/moonlight | awk '{print $5}')"
+            echo "- bundled engine libs: $(ls engine/bin/libs | wc -l)"
+            echo "- pakz size: $(du -h dist/Moonlight.pakz | cut -f1)"
+            echo
+            echo "Bundled libraries:"
+            echo '```'
+            ls dist/Moonlight.pak/bin/libs
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload pakz
+        uses: actions/upload-artifact@v4
+        with:
+          name: Moonlight-tg5040-pakz
+          path: dist/Moonlight.pakz
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tg5040-build-logs
+          path: |
+            build-nextui/CMakeCache.txt
+            build-nextui/CMakeFiles/CMakeError.log
+            build-nextui/CMakeFiles/CMakeOutput.log
+            build-link/CMakeCache.txt
+          if-no-files-found: ignore

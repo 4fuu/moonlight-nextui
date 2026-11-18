@@ -1,0 +1,16 @@
+{
+  "id": "4fuu.moonlight",
+  "name": "Moonlight",
+  "version": "v0.2.0",
+  "type": "TOOL",
+  "description": "Stream games from your PC with native-resolution support. Rebuilt Apostrophe wrapper with the bundled spruce moonlight-embedded engine; pair, manage servers, and launch streams from a native NextUI interface.",
+  "author": "4fuu (wrapper originally by richieszemeredi)",
+  "repo_url": "https://github.com/4fuu/moonlight-nextui",
+  "release_filename": "Moonlight.pakz",
+  "changelog": {
+    "v0.2.0": "Self-contained fork: Apostrophe host seam, bundled spruce 2.7.0 engine and libs, C3 session launch, controlled stream spawn for the cooperation SDK, and the vendored full-fidelity NextUI overlay renderer (not yet enabled)."
+  },
+  "platforms": [
+    "tg5040"
+  ]
+}

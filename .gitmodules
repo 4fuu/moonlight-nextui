@@ -1,0 +1,6 @@
+[submodule "third_party/apostrophe"]
+	path = third_party/apostrophe
+	url = https://github.com/4fuu/Apostrophe.git
+[submodule "third_party/nextui-app-sdk"]
+	path = third_party/nextui-app-sdk
+	url = https://github.com/4fuu/nextui-app-sdk.git

@@ -1,0 +1,8 @@
+build/
+build-host/
+build-nextui/
+dist/
+.cache/
+.claude/
+.DS_Store
+*.o

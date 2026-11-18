@@ -1,0 +1,39 @@
+#!/bin/sh
+# PATH shim for the bundled moonlight-embedded engine.
+#
+# The wrapper calls the bare name "moonlight" (through the shell in pair/list,
+# via argv in stream). launch.sh puts this directory first on PATH, so every
+# call lands here and gets the device platform flags and the pak's key
+# directory, then execs the spruce 2.7.0 engine in bin/.
+#
+# -platform sdl  is the software-decoder + SDL input/audio backend the pak has
+#                always shipped; it must not be auto-detected on device.
+# -keydir        keeps pairing keys under the pak's shared userdata instead of
+#                the read-only rootfs.
+# -quitappafter  is a stream-only flag: ending the local session also asks the
+#                host to quit the streamed app.
+#
+# Keep this file argument-transparent: the wrapper builds the stream argv
+# itself (no shell), and pair/list still go through /bin/sh -c.
+
+set -eu
+
+PAK_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
+ENGINE="$PAK_DIR/bin/moonlight"
+
+if [ ! -x "$ENGINE" ]; then
+    echo "moonlight shim: bundled engine missing: $ENGINE" >&2
+    exit 127
+fi
+
+KEY_DIR=${MOONLIGHT_KEY_DIR:-${HOME:-/tmp}/.cache/moonlight}
+mkdir -p "$KEY_DIR" 2>/dev/null || true
+
+case "${1:-}" in
+    stream)
+        exec "$ENGINE" -platform sdl -keydir "$KEY_DIR" -quitappafter "$@"
+        ;;
+    *)
+        exec "$ENGINE" -platform sdl -keydir "$KEY_DIR" "$@"
+        ;;
+esac
