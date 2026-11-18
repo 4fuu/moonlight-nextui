@@ -9,7 +9,7 @@ set(CMAKE_C_EXTENSIONS ON)
 option(NEXTUI_FULL_OVERLAY
        "Build the vendored NextUI full-fidelity overlay renderer" ON)
 option(NEXTUI_SDK
-       "Compile the nextui-app-sdk binding (requires a populated third_party/nextui-app-sdk)" OFF)
+       "Compile the nextui-app-sdk cooperation binding" ON)
 option(NEXTUI_BUILD_TESTS "Build host tests and the overlay render smoke test" OFF)
 
 if(NOT DEFINED MOONLIGHT_PLATFORM)
@@ -70,6 +70,11 @@ target_include_directories(moonlight-pak PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/apostrophe/include
 )
 target_compile_definitions(moonlight-pak PRIVATE ${MOONLIGHT_PLATFORM_DEFINE})
+if(CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+    # ui.c has upstream snprintf truncation patterns that are intentional.
+    target_compile_options(moonlight-pak PRIVATE
+        -Wall -Wextra -Wno-unused-parameter -Wno-format-truncation)
+endif()
 target_link_libraries(moonlight-pak PRIVATE ${MOONLIGHT_SDL_LIBS} m pthread)
 
 if(MOONLIGHT_PLATFORM STREQUAL "tg5040")
@@ -85,15 +90,24 @@ endif()
 # kept explicit so a checkout with the placeholder submodule still builds.
 
 if(NEXTUI_SDK)
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nextui-app-sdk/include"
-       AND NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nextui-app-sdk/src")
+    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/third_party/nextui-app-sdk/include/nextui_app.h")
         message(FATAL_ERROR
-            "NEXTUI_SDK=ON but third_party/nextui-app-sdk has no include/ or src/; "
-            "the SDK C client has not landed yet (phase A).")
+            "NEXTUI_SDK=ON but third_party/nextui-app-sdk has no include/nextui_app.h; "
+            "run: git submodule update --init third_party/nextui-app-sdk")
     endif()
-    target_include_directories(moonlight-pak PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nextui-app-sdk/include)
+    if(NOT NEXTUI_FULL_OVERLAY)
+        message(FATAL_ERROR
+            "NEXTUI_SDK needs NEXTUI_FULL_OVERLAY: the hosted panel is the "
+            "vendored NextUI renderer.")
+    endif()
+
+    set(NEXTUI_APP_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NEXTUI_APP_BUILD_EXAMPLE OFF CACHE BOOL "" FORCE)
+    add_subdirectory(third_party/nextui-app-sdk
+                     ${CMAKE_CURRENT_BINARY_DIR}/nextui-app-sdk EXCLUDE_FROM_ALL)
+
     target_compile_definitions(moonlight-pak PRIVATE NEXTUI_SDK=1)
+    target_link_libraries(moonlight-pak PRIVATE nextui_app::nextui_app nextui-overlay)
 endif()
 
 # ── Full-fidelity overlay renderer (vendored NextUI) ────────────────────────
@@ -120,6 +134,7 @@ if(NEXTUI_FULL_OVERLAY)
     )
     target_include_directories(nextui-overlay PUBLIC
         ${NEXTUI_OVERLAY_DIR}/vendor
+        ${NEXTUI_OVERLAY_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/apostrophe/include
     )
     target_compile_definitions(nextui-overlay PUBLIC
@@ -172,8 +187,23 @@ if(NEXTUI_BUILD_TESTS)
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/apostrophe/include)
     target_compile_definitions(test_stream_spawn PRIVATE ${MOONLIGHT_PLATFORM_DEFINE})
+    if(NEXTUI_SDK)
+        target_link_libraries(test_stream_spawn PRIVATE nextui_app::nextui_app nextui-overlay)
+        target_compile_definitions(test_stream_spawn PRIVATE NEXTUI_SDK=1)
+    endif()
     target_link_libraries(test_stream_spawn PRIVATE ${MOONLIGHT_SDL_LIBS} m pthread)
     add_test(NAME stream-spawn COMMAND test_stream_spawn)
+
+    # The widget frame loop is the integration point between Apostrophe and the
+    # host seam; this checks draw/poll/quit without a widget or a device.
+    add_executable(test_host_bridge
+        tests/test_host_bridge.c
+        tests/apostrophe_impl.c
+    )
+    target_include_directories(test_host_bridge PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/apostrophe/include)
+    target_link_libraries(test_host_bridge PRIVATE ${MOONLIGHT_SDL_LIBS} m pthread)
+    add_test(NAME host-bridge COMMAND test_host_bridge)
 
     add_executable(test_pak_manifest
         tests/test_pak_manifest.c
@@ -202,5 +232,38 @@ if(NEXTUI_BUILD_TESTS)
                          $<TARGET_FILE:overlay-smoke>
                          ${NEXTUI_TEST_SD_ROOT}
                          ${CMAKE_CURRENT_BINARY_DIR}/overlay-smoke.png)
+
+        add_executable(hud-smoke tests/hud_smoke.c)
+        target_link_libraries(hud-smoke PRIVATE nextui-overlay)
+        add_test(NAME hud-smoke
+                 COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/nextui/test-overlay.sh
+                         $<TARGET_FILE:hud-smoke>
+                         ${NEXTUI_TEST_SD_ROOT}-hud
+                         ${CMAKE_CURRENT_BINARY_DIR}/hud-smoke.png)
+
+        if(NEXTUI_SDK)
+            # Dynamic-ownership transition against the SDK's fake devserv.
+            add_executable(fake_devserv
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nextui-app-sdk/tests/fake_devserv.c)
+            target_compile_definitions(fake_devserv PRIVATE _POSIX_C_SOURCE=200809L)
+
+            add_executable(test_coop
+                tests/test_coop.c
+                tests/apostrophe_impl.c
+                src/nextui_coop.c
+            )
+            target_include_directories(test_coop PRIVATE
+                ${CMAKE_CURRENT_SOURCE_DIR}/src
+                ${CMAKE_CURRENT_SOURCE_DIR}/third_party/apostrophe/include)
+            target_link_libraries(test_coop PRIVATE
+                nextui_app::nextui_app nextui-overlay ${MOONLIGHT_SDL_LIBS} m pthread)
+            target_compile_definitions(test_coop PRIVATE NEXTUI_SDK=1)
+            add_test(NAME coop-transitions
+                     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/nextui/test-coop.sh
+                             $<TARGET_FILE:test_coop>
+                             $<TARGET_FILE:fake_devserv>
+                             ${NEXTUI_TEST_SD_ROOT}-coop
+                             ${CMAKE_CURRENT_BINARY_DIR}/coop-test.log)
+        endif()
     endif()
 endif()

@@ -4,25 +4,23 @@
 #include <stdbool.h>
 
 /*
- * NextUI cooperation seam (integration plan M1-M6).
+ * NextUI cooperation layer (integration plan M1-M6).
  *
- * S1-S5 put the call sites and the ownership policy in place; the SDK work
- * itself is still gated on phase A (contract + C client) and phase B (system
- * side). Everything in this module is a no-op until NEXTUI_SDK is defined.
+ * The SDK client (third_party/nextui-app-sdk) owns the devserv protocol; this
+ * module owns the app-side policy:
  *
- * Ownership policy, fixed here so M2/M6 cannot drift:
- *   - menu / pair / settings: the wrapper owns the display and hosts the
- *     full-fidelity overlay in-process (NEXTUI_OVERLAY_APP);
- *   - streaming: the engine is a separate process owning the display, so the
- *     wrapper answers NEXTUI_OVERLAY_SYSTEM and the system fallback draws.
+ *   - menu: the wrapper hosts the full-fidelity NextUI overlay in-process
+ *     (overlay.host true, hud.policy app);
+ *   - streaming: the engine owns fb0, so the wrapper yields hosting
+ *     (overlay.host false) and the system fallback draws HOME/HUD, while the
+ *     SDK keeps the event channel open for sleep inhibit and status.
  *
- * M1  src/nextui_coop.c: connect devserv, attach ap_host_backend, event pump.
- * M2  main.c: ap_host_attach + poll/present around the menu loop.
- * M3  system-feedback ownership + HUD drawing (app only in menu mode).
- * M4  sleep.prepare / sleep.inhibit / wake.done; stream_begin holds inhibit.
- * M5  battery/status for the overlay row.
- * M6  streaming HOME: handled_by_system with phase A; until then the wrapper
- *     can end the stream (quit_requested) and reopen the menu overlay.
+ * Ownership policy is therefore dynamic, not a static manifest claim:
+ * nextui_coop_overlay_owner() answers per frame, and overlay_suspend/resume
+ * perform the ordered transition from contract section 7.9.3.
+ *
+ * All SDK calls are safe to make from the main thread while the SDK thread
+ * owns polling; request functions are serialized inside the client.
  */
 
 typedef enum {
@@ -30,27 +28,36 @@ typedef enum {
     NEXTUI_OVERLAY_APP,        /* wrapper draws the overlay in-process */
 } nextui_overlay_owner;
 
-/* Process-wide lifecycle, called from main() around the Apostrophe loop. */
+/* After ap_init()/PAD_init: connect, attach the Apostrophe host backend, and
+ * start the event thread. A missing devserv is not fatal: the app runs
+ * unadapted and HOME falls back to the system panel. */
 void nextui_coop_init(void);
 void nextui_coop_shutdown(void);
 
-/* Stream lifecycle, called by ml_stream() around the controlled spawn. */
+/* Before ap_quit(): close the panel, report overlay.state closed, yield
+ * hosting, and release the renderer-bound overlay resources.
+ * After ap_init(): rebuild the overlay against the new renderer and restore
+ * hosting. */
+void nextui_coop_overlay_suspend(void);
+void nextui_coop_overlay_resume(void);
+
+/* Stream lifecycle (ml_stream). Holds the automatic sleep pre-inhibit and
+ * tracks the ownership answer. */
 void nextui_coop_stream_begin(void);
 void nextui_coop_stream_end(void);
 
-/* Pump SDK events. Called by ml_stream() while the engine runs; M1 makes this
- * drain the event channel (sleep.prepare, wake.done, battery changes). */
+/* Called from the stream wait loop: refreshes the sleep inhibit lease and
+ * observes session end. */
 void nextui_coop_tick(void);
 
 bool nextui_coop_streaming(void);
-
-/* Dynamic ownership seam: the answer the app gives app-action/system-feedback
- * for the current mode. */
 nextui_overlay_owner nextui_coop_overlay_owner(void);
 
-/* True when the SDK asked the app to leave the current stream (phase-A
- * dynamic ownership + HOME, or the M6 fallback). ml_stream() terminates the
- * engine process group and returns a clean status. */
+/* True when the SDK asked the app to leave (session.ended, or the overlay's
+ * Exit action). ml_stream() terminates the engine; main() leaves the loop. */
 bool nextui_coop_quit_requested(void);
+
+/* A short human-readable state line for logs/tests. */
+const char *nextui_coop_state_string(void);
 
 #endif /* NEXTUI_COOP_H */

@@ -9,8 +9,8 @@ file records provenance and licenses for every piece.
 | Component | Location | License | Source |
 |---|---|---|---|
 | Moonlight wrapper (fork of `richieszemeredi/nextui-moonlight-pak`) | `src/`, `tests/` | MIT | <https://github.com/richieszemeredi/nextui-moonlight-pak> at `84ead2e`; fork <https://github.com/4fuu/moonlight-nextui> |
-| Apostrophe (UI framework) | `third_party/apostrophe` submodule | MIT | <https://github.com/4fuu/Apostrophe> at `236f133` (fork of `Helaas/Apostrophe`) |
-| nextui-app-sdk | `third_party/nextui-app-sdk` submodule | MIT | <https://github.com/4fuu/nextui-app-sdk> at `feddd46`; **not compiled yet** (S1-S5 build guard `NEXTUI_SDK=OFF`) |
+| Apostrophe (UI framework) | `third_party/apostrophe` submodule | MIT | <https://github.com/4fuu/Apostrophe> at `70ae5a4` (fork of `Helaas/Apostrophe`) |
+| nextui-app-sdk | `third_party/nextui-app-sdk` submodule, linked into the wrapper | MIT | <https://github.com/4fuu/nextui-app-sdk> at `4069f16` (client 1.0.0, protocol 1) |
 | NextUI full-fidelity overlay renderer (vendored) | `third_party/nextui-overlay/vendor/` | PolyForm Noncommercial 1.0.0 | <https://github.com/4fuu/NextUI> at `2cc6eaf` |
 | moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | spruce 2.7.0 build; see below |
 | Bundled runtime libraries (22 files) | `engine/bin/libs/` | per-library, see below | spruceOS / Ubuntu 20.04 aarch64 multiarch |
@@ -42,10 +42,8 @@ code, not a reimplementation:
 Upstream license: **PolyForm Noncommercial License 1.0.0** (see
 `third_party/nextui-overlay/LICENSE`). The license permits use for
 noncommercial purposes. This pak is distributed free of charge; the vendored
-files keep their license and may not be sold. The SDK-vendor alternative
-(phase A producing a shared overlay renderer) is the intended long-term home:
-when it exists, this snapshot is replaced and the license follows that
-component.
+files keep their license and may not be sold. A shared renderer in `nextui-app-sdk` remains a design proposal; if it lands,
+this snapshot is replaced and the license follows that component.
 
 Local changes to the snapshot (kept to a minimum so it can be refreshed):
 
@@ -78,6 +76,10 @@ spruceOS's shipped Moonlight app:
 The wrapper executes the engine as a separate process through the PATH shim
 (`shim/moonlight`). GPL-3.0 applies to the engine and its GameStream libraries;
 the source offer above satisfies redistribution.
+
+The wrapper also links the MIT `nextui-app-sdk` client (`4069f16`) and the MIT
+Apostrophe host bridge. The cooperation layer talks to `devserv` over its Unix
+socket; the protocol contract is in the SDK repository.
 
 ## Bundled runtime libraries
 

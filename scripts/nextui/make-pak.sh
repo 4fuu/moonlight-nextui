@@ -42,24 +42,13 @@ for lib in "$ROOT"/engine/bin/libs/*.so*; do
 done
 chmod 755 "$PAK"/bin/libs/*.so*
 
-# The overlay capability is a guarded placeholder, not a static declaration.
-# Phase A must define dynamic ownership before this is enabled: the menu can
-# host HOME in-process, but during a stream the engine owns the display and
-# the wrapper must answer handled_by_system. A static "overlay" in pak.json
-# would claim HOME for the whole app lifetime and leave streaming with no
-# owner.
-if [ "${MOONLIGHT_OVERLAY_CAPABILITY:-0}" = "1" ]; then
-    echo "make-pak: adding overlay capability (phase A dynamic ownership required)"
-    python3 - "$PAK/pak.json" <<'PY'
-import json, sys
-path = sys.argv[1]
-with open(path) as fh:
-    manifest = json.load(fh)
-manifest["capabilities"] = ["overlay"]
-with open(path, "w") as fh:
-    json.dump(manifest, fh, indent=2)
-    fh.write("\n")
-PY
+# pak.json declares "capabilities": ["overlay"]. That is the permission, not a
+# lifetime claim: the wrapper sends overlay.host:false while the engine owns
+# the display and restores it in the menu (contract 7.9). Keep the declaration
+# in the manifest file so NextUI's parser and the tests see the same value.
+if ! python3 -c 'import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get("capabilities")==["overlay"] else 1)' "$PAK/pak.json"; then
+    echo "make-pak: pak.json must declare capabilities [\"overlay\"]" >&2
+    exit 1
 fi
 
 # CA fallback; launch.sh prefers /mnt/SDCARD/.system/res/ca-bundle.crt.

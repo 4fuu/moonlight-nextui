@@ -37,10 +37,10 @@ ctest --test-dir build-host --output-on-failure
 
 ## Status
 
-Baseline streaming works; the SDK cooperation layer (M1-M6) waits for the
-phase-A contract and phase-B system side. The full-fidelity NextUI overlay
-renderer is vendored and built, but not attached to the menu yet. See
-[NEXTUI.md](NEXTUI.md#status).
+Baseline streaming works and the SDK cooperation layer (M1-M6) is implemented:
+in-process full-fidelity HOME panel, dynamic overlay ownership while streaming,
+volume/brightness HUD, sleep inhibit during a stream, and SDK battery/status
+rows. Device acceptance is pending. See [NEXTUI.md](NEXTUI.md#status).
 
 ## License
 

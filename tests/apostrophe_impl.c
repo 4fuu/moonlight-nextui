@@ -6,3 +6,5 @@
 
 #define AP_IMPLEMENTATION
 #include "apostrophe.h"
+#define AP_HOST_IMPLEMENTATION
+#include "apostrophe_host.h"

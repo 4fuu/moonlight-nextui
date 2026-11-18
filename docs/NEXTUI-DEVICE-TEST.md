@@ -48,9 +48,10 @@ but app-action/system-feedback have no session to route to.
 adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf app-action overlay'
 ```
 
-Expected today: `"handled_by_system":true` (the pak does **not** declare the
-overlay capability). On HOME, NextUI's fallback panel must open and offer
-Resume/Exit; the app must not draw its own panel yet.
+Expected: `"handled_by_app":true` and `"overlay_host":true` (the pak declares
+`overlay` and hosts in the menu). Pressing HOME opens the in-process panel; the
+system panel must not appear. The app log should show
+`nextui: connected: session=... overlay_host=1`.
 
 ## 3. Server setup and pairing
 
@@ -110,46 +111,100 @@ adb shell 'pidof moonlight || echo no-orphan'
    (`kill $(pidof moonlight)`); the wrapper must return to the menu with a
    non-zero stream result and no hanging process.
 
-## 6. Sleep behavior (baseline)
+## 6. Sleep behavior (see section 9 for the handshake)
 
-1. Start a stream.
-2. Press the power key once.
+Start a stream and press the power key once. The SDK must defer the attempt for
+five minutes and the stream must keep running; section 9 covers the full
+handshake and the post-stream release.
 
-Expected **today**: NextUI's normal power path runs. There is no SDK
-`sleep.inhibit` yet (M4), so the device may suspend mid-stream. Record whether
-the stream survives resume; this is the baseline for M4, not a failure.
+## 7. Full-fidelity HOME panel
 
-## 7. Full-fidelity overlay (build-only today)
+Home from any menu screen (main, servers, settings, pairing):
 
-The vendored NextUI renderer is not attached to the menu yet (M2). On the host
-it is covered by `overlay-smoke` (1024x768 PNG). On device, only confirm the
-theme/font files it will read exist:
+- The panel appears over the current screen with the NextUI dim wash. Compare
+  it against the system panel from an unadapted app: same position, radius,
+  title "System" + "Moonlight", gear icon, row spacing, footer pills and the
+  top-right battery/Wi-Fi/Bluetooth pill.
+- Rows: Resume (closes), Save/Resume capabilities are **not** offered by
+  Moonlight; Wi-Fi and Bluetooth show `On`/`Off` from the SDK status; Exit to
+  desktop closes the app; Close returns to the app.
+- D-pad up/down moves, A activates, B closes. While the panel is open the app
+  behind it must not move.
+- Wi-Fi/Bluetooth toggles currently answer unavailable (no C1 backend); a
+  failed toggle must not change the row.
+- Exit to desktop returns to NextUI; the log ends with
+  `=== Moonlight.pak exit rc=0`.
+
+Theme check: change the NextUI theme or font, relaunch, and confirm the panel
+follows it (the renderer reads `/mnt/SDCARD/.system/res` and
+`minuisettings.txt`, not a packaged copy).
 
 ```sh
 adb shell 'ls -l /mnt/SDCARD/.system/res/assets@3x.png /mnt/SDCARD/.system/res/font1.ttf /mnt/SDCARD/.system/res/font2.ttf'
 adb shell 'grep -E "color[1-7]=|font=" /mnt/SDCARD/.userdata/shared/minuisettings.txt'
 ```
 
-## 8. Later: M1-M6 acceptance (do not run yet)
+## 8. HUD cooperation
 
-When phase A/B land and the cooperation layer is enabled, rerun this section:
+1. In the menu, press volume up/down and brightness keys.
+2. Expected: exactly one HUD, drawn by the app (NextUI's volume/brightness
+   pill at the top right), auto-hiding after ~1.6 s. keymon must not draw a
+   second one.
+3. Mute keys are left to the system HUD; confirm one system HUD and no app one.
+4. During a stream, the same keys must show the **system** HUD. The app yields
+   `overlay.host:false`, so no `feedback` events are sent.
+5. If the app's HUD does not appear, check the log for `hud.policy` failures
+   and confirm the session is adapted.
 
-- Menu HOME opens an in-process panel that is pixel-identical to NextUI's
-  system panel (header, shared status row, Resume/Wi-Fi/Bluetooth/Exit rows,
-  footer hints), and input is owned by the panel while open.
-- Volume/brightness keys show the HUD once, with the same owner as the system
-  contract says (app in menu, system in stream).
-- During a stream the system fallback owns HOME/HUD (`handled_by_system`), or
-  HOME ends the stream cleanly if phase A does not support dynamic ownership.
-- Sleep during a stream is inhibited with a visible/deferred `sleep.prepare`;
-  resume sends `wake.done` and the stream continues (or is paused and
-  restored, per the final contract).
-- Battery row matches `/sys/class/power_supply/battery/capacity` and updates
-  on change.
+## 9. Sleep / wake handshake
 
-## 9. Evidence to attach
+1. **Menu, idle:** let the device auto-sleep. It should suspend normally (the
+   app acks `sleep.prepare` with nothing to save).
+2. **Streaming, idle:** wait past the idle threshold. The stream must not
+   suspend: the wrapper holds and refreshes `sleep.inhibit("streaming", 300000)`.
+3. **Streaming, explicit power press:** the system sends `sleep.prepare`; the
+   app inhibits that attempt for five minutes and the stream continues. The
+   log shows the inhibit; `nextdev session-status`/`sleep.status` shows the
+   lease.
+4. **After the stream ends:** the lease is released (`sleep.release`), so idle
+   sleep works again.
+5. **Wake:** after a suspend in the menu, `wake.done` refreshes the status
+   snapshot; the panel and battery row stay correct.
+
+```sh
+adb shell 'grep -E "sleep|stream (begin|end)" /mnt/SDCARD/.userdata/tg5040/logs/Moonlight.txt'
+adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf sleep-status'
+```
+
+## 10. Battery and status rows
+
+- Battery: compare the pill against `/sys/class/power_supply/axp2202-battery/capacity`
+  and the charging state; plug/unplug USB and confirm the icon updates within
+  a few seconds (SDK pushes battery every 5 s).
+- Wi-Fi: toggle Wi-Fi from NextUI settings while the panel is open; the row and
+  the status pill change without restarting Moonlight.
+- Bluetooth: connect/disconnect a pad or headset; the pill's Bluetooth icon
+  follows.
+
+## 11. Dynamic ownership during a stream
+
+1. Start a stream.
+2. From a second shell: `nextdev app-action overlay`. Expected:
+   `"handled_by_system":true` and `"overlay_host":false`.
+3. Press HOME on the device: NextUI's system panel appears over the stream.
+4. Its Exit action must end the stream and return to NextUI; Resume closes the
+   panel and leaves the stream running.
+5. After returning to the Moonlight menu, `app-action overlay` must be
+   `handled_by_app` again.
+
+```sh
+adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf session-status | grep overlay_host'
+```
+
+## 12. Evidence to attach
 
 - `Moonlight.txt` from the failing run.
 - Output of the `session-status` and `app-action overlay` commands.
-- A short recording of: launch → HOME fallback → stream → exit → menu.
+- A short recording of: launch → HOME panel → HUD → stream → dynamic HOME
+  fallback → exit → menu.
 - For input failures, the exact pad model and which buttons are wrong.

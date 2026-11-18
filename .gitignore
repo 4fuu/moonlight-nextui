@@ -1,6 +1,5 @@
 build/
-build-host/
-build-nextui/
+build-*/
 dist/
 .cache/
 .claude/
