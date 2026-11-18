@@ -60,6 +60,9 @@ jobs:
           sh -n Tools/tg5040/Moonlight.pak/launch.sh
           sh -n shim/moonlight
 
+      # The manifest is checked twice: tests/test_pak_manifest.c uses NextUI's
+      # own parser (what the launcher reads), and the Pak Store fields below are
+      # the ones only this repository's packaging depends on.
       - name: Validate manifests
         run: |
           python3 -m json.tool Tools/tg5040/Moonlight.pak/pak.json >/dev/null
@@ -71,10 +74,7 @@ jobs:
           assert manifest["type"] == "TOOL", manifest["type"]
           assert manifest["release_filename"] == "Moonlight.pakz"
           assert manifest["platforms"] == ["tg5040"], manifest["platforms"]
-          # Dynamic ownership is unresolved: a static overlay claim would leave
-          # streaming with no HOME owner. Enable only after phase A.
-          assert "capabilities" not in manifest, "static overlay capability must stay off"
-          print("pak.json ok:", manifest["id"], manifest["version"])
+          print("pak.json store fields ok:", manifest["id"], manifest["version"])
           PY
 
       - name: Upload overlay render
@@ -117,6 +117,23 @@ jobs:
 
       - name: Cross-build wrapper and overlay
         run: ./scripts/nextui/build.sh tg5040
+
+      # The pak build compiles the overlay archive but does not link it into a
+      # binary (M2 does that). Linking it here proves the aarch64 closure
+      # resolves -- SDL2_ttf/SDL2_image stubs, libsamplerate, and the platform
+      # seam -- which a compile-only build cannot show.
+      - name: Link the overlay into an aarch64 binary
+        run: |
+          set -e
+          cmake -S . -B build-link \
+            -DCMAKE_TOOLCHAIN_FILE=cmake/toolchain-tg5040.cmake \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DMOONLIGHT_PLATFORM=tg5040 \
+            -DNEXTUI_BUILD_TESTS=ON
+          cmake --build build-link --target overlay-smoke --parallel "${JOBS}"
+          ${CROSS_TRIPLE}-readelf -h build-link/overlay-smoke | grep -q 'AArch64'
+          echo "overlay link closure: $(ls -l build-link/overlay-smoke | awk '{print $5}') bytes"
+          ${CROSS_TRIPLE}-readelf -d build-link/overlay-smoke | grep NEEDED
 
       - name: Package Moonlight.pakz
         run: ./scripts/nextui/make-pak.sh
@@ -170,4 +187,5 @@ jobs:
             build-nextui/CMakeCache.txt
             build-nextui/CMakeFiles/CMakeError.log
             build-nextui/CMakeFiles/CMakeOutput.log
+            build-link/CMakeCache.txt
           if-no-files-found: ignore

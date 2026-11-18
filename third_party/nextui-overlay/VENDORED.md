@@ -13,7 +13,8 @@ system overlay instead of being redrawn with Apostrophe primitives.
   `ui_overlay.c`, `ui_overlay.h`, `apostrophe_overlay_host.c`,
   `apostrophe_overlay_host.h`, `api.c`, `api.h`, `config.c`, `config.h`,
   `i18n.c`, `i18n.h`, `palette.c`, `palette.h`, `utils.c`, `utils.h`,
-  `scaler.c`, `scaler.h`, `sdl.h`, `defines.h`, `fn_action.h`
+  `scaler.c`, `scaler.h`, `sdl.h`, `defines.h`, `fn_action.h`,
+  `pak_manifest.c`, `pak_manifest.h`, `json_lite.c`, `json_lite.h`
 - `vendor/platform.h` is `workspace/tg5040/platform/platform.h`.
 - `vendor/msettings.h` is `workspace/tg5040/libmsettings/msettings.h`; the
   renderer only needs its declarations.
@@ -23,6 +24,11 @@ system overlay instead of being redrawn with Apostrophe primitives.
 
 `src/platform_stubs.c` and `tests/overlay_smoke.c` are this repository's MIT
 code, not NextUI code.
+
+`pak_manifest.c` is NextUI's pak.json reader. It is vendored so the pak's own
+manifest is validated by the parser the launcher actually uses
+(`tests/test_pak_manifest.c`), rather than by a second, hand-written check that
+could drift from the real contract.
 
 ## Local changes
 

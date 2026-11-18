@@ -112,6 +112,10 @@ if(NEXTUI_FULL_OVERLAY)
         ${NEXTUI_OVERLAY_DIR}/vendor/scaler.c
         ${NEXTUI_OVERLAY_DIR}/vendor/ui_overlay.c
         ${NEXTUI_OVERLAY_DIR}/vendor/apostrophe_overlay_host.c
+        # NextUI's manifest reader: the launcher's own pak.json contract, used
+        # by tests/test_pak_manifest.c and by M1's capability checks.
+        ${NEXTUI_OVERLAY_DIR}/vendor/pak_manifest.c
+        ${NEXTUI_OVERLAY_DIR}/vendor/json_lite.c
         ${NEXTUI_OVERLAY_DIR}/src/platform_stubs.c
     )
     target_include_directories(nextui-overlay PUBLIC
@@ -170,6 +174,16 @@ if(NEXTUI_BUILD_TESTS)
     target_compile_definitions(test_stream_spawn PRIVATE ${MOONLIGHT_PLATFORM_DEFINE})
     target_link_libraries(test_stream_spawn PRIVATE ${MOONLIGHT_SDL_LIBS} m pthread)
     add_test(NAME stream-spawn COMMAND test_stream_spawn)
+
+    add_executable(test_pak_manifest
+        tests/test_pak_manifest.c
+        ${NEXTUI_OVERLAY_DIR}/vendor/pak_manifest.c
+        ${NEXTUI_OVERLAY_DIR}/vendor/json_lite.c
+    )
+    target_include_directories(test_pak_manifest PRIVATE ${NEXTUI_OVERLAY_DIR}/vendor)
+    add_test(NAME pak-manifest
+             COMMAND test_pak_manifest
+                     ${CMAKE_CURRENT_SOURCE_DIR}/Tools/tg5040/Moonlight.pak)
 
     if(NEXTUI_FULL_OVERLAY)
         # The host render test is hermetic: the library is compiled against a
