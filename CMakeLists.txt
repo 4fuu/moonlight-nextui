@@ -20,13 +20,16 @@ if(NOT DEFINED MOONLIGHT_PLATFORM)
     endif()
 endif()
 
+# PLATFORM_TG5040 makes Apostrophe a device build (is_nextui, device font
+# lookup); PLATFORM_LINUX keeps a host build a normal desktop app. The vendored
+# NextUI code is always the tg5040 variant, because that is the platform its
+# platform.h describes.
 if(MOONLIGHT_PLATFORM STREQUAL "tg5040")
     set(MOONLIGHT_PLATFORM_DEFINE PLATFORM_TG5040)
-    set(MOONLIGHT_PLATFORM_STRING "tg5040")
 else()
-    set(MOONLIGHT_PLATFORM_DEFINE PLATFORM_NEXTUI)
-    set(MOONLIGHT_PLATFORM_STRING "nextui")
+    set(MOONLIGHT_PLATFORM_DEFINE PLATFORM_LINUX)
 endif()
+set(MOONLIGHT_PLATFORM_STRING "tg5040")
 
 # ── SDL2 ────────────────────────────────────────────────────────────────────
 # The tg5040 sysroot ships sdl2.pc but not SDL2_ttf.pc/SDL2_image.pc; their
@@ -174,7 +177,7 @@ if(NEXTUI_BUILD_TESTS)
         # the vendored atlas and font. This only happens in a test build, so a
         # device build always keeps NextUI's /mnt/SDCARD default.
         set(NEXTUI_TEST_SD_ROOT "${CMAKE_CURRENT_BINARY_DIR}/nextui-test-sd")
-        target_compile_definitions(nextui-overlay PUBLIC
+        target_compile_definitions(nextui-overlay PRIVATE
             SDCARD_PATH="${NEXTUI_TEST_SD_ROOT}")
 
         add_executable(overlay-smoke
@@ -187,5 +190,3 @@ if(NEXTUI_BUILD_TESTS)
                          ${CMAKE_CURRENT_BINARY_DIR}/overlay-smoke.png)
     endif()
 endif()
-
-install(TARGETS moonlight-pak RUNTIME DESTINATION .)
