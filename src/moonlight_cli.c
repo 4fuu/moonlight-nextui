@@ -238,6 +238,9 @@ static void terminate_stream(pid_t pid)
         usleep(100 * 1000);
     }
     kill(-pid, SIGKILL);
+    /* SIGKILL cannot be caught, so this returns promptly; without it the
+     * wrapper would carry a zombie for the rest of its life. */
+    waitpid(pid, NULL, 0);
 }
 
 int ml_stream(const ml_config *cfg, const char *app_name)
