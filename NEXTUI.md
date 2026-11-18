@@ -17,17 +17,20 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | Wrapper rebuild (Apostrophe fork, `ap_host_*` seam) | done, S1 |
 | tg5040 cross-build + `Moonlight.pakz` packaging | done, S2 (CI is authoritative) |
 | C3 session launcher, engine shim, CA/log/config paths | done, S3 |
-| `pak.json` identity + guarded overlay placeholder | done, S4 |
+| `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
-| Full-fidelity overlay renderer vendored and building | done, S1/S2 scaffolding |
-| In-process HOME overlay in the menu | **M2, waits for phase A** |
-| Volume/brightness HUD cooperation | **M3, waits for phase A** |
-| Sleep/wake handshake + stream inhibit | **M4, waits for A+B** |
-| Battery/status rows from the SDK | **M5, waits for phase A** |
-| Streaming-time HOME ownership | **M6, waits for phase A dynamic ownership** |
+| Full-fidelity overlay renderer vendored and building | done, S1/S2 |
+| In-process HOME overlay in the menu | done, M2 |
+| Volume/brightness HUD cooperation | done, M3 |
+| Sleep/wake handshake + stream inhibit | done, M4 |
+| Battery/status rows from the SDK | done, M5 |
+| Streaming-time HOME ownership (dynamic) | done, M6 |
+| Device acceptance (handshake, panel, HUD) | **pending owner test** |
 
-The wrapper runs and streams today. What is missing is the SDK cooperation
-layer, not the baseline app.
+The wrapper now links `nextui-app-sdk` at `4069f16` and implements the
+cooperation contract. A missing devserv is not fatal: the app logs the failure,
+reads HOME from `KEY_HOMEPAGE` itself, and otherwise behaves like an
+uncooperative app.
 
 ## Rendering route: full fidelity
 
@@ -45,10 +48,13 @@ NextUI's own renderer instead of drawing with Apostrophe primitives:
   `/mnt/SDCARD/.system/res`, so colors and metrics follow the installed NextUI
   theme rather than a copy baked into the pak.
 
-`third_party/nextui-overlay/` is build-only in this phase: `nextui-overlay`
-is a static archive, compiled on every host and cross build to prove the
-closure. M2 attaches it to `src/main.c` with `ap_host_attach()` and switches
-the menu loop to `ap_host_poll()` / `ap_host_present()`. See
+`third_party/nextui-overlay/` is linked into the wrapper. The app is built
+from Apostrophe's blocking widgets, which own their frame loops, so the
+Apostrophe fork's host bridge drives the same backend from `ap_poll_input()`
+and `ap_present()`: the panel is drawn before every present, host input is
+polled once per frame, and a quit request injects one synthetic B press so the
+widget unwinds to `main()`. A custom-loop app can still use
+`ap_host_poll()`/`ap_host_present()` directly. See
 [docs/THIRD-PARTY.md](docs/THIRD-PARTY.md) for provenance and the NextUI
 noncommercial license.
 
@@ -57,26 +63,24 @@ link with `-ffunction-sections -Wl,--gc-sections`: only the GFX/PAD/CFG path the
 overlay reaches is kept, so the pak does not pull NextUI's power, video or LED
 subsystems into the app process.
 
-## Dynamic overlay ownership (important)
+## Dynamic overlay ownership
 
-`pak.json` deliberately does **not** declare `"capabilities": ["overlay"]` yet.
-NextUI's C4 contract currently treats that declaration as static: an adapted app
-owns HOME for its whole lifetime. Moonlight has two different states:
+`pak.json` declares `"capabilities": ["overlay"]`. That declaration is the
+static permission; the effective host is runtime session state
+(contract §7.9). Moonlight has two states:
 
-- **Menu / pair / servers / settings** — the wrapper owns the display and can
-  host the panel in-process (`NEXTUI_OVERLAY_APP`).
+- **Menu / pair / servers / settings** — the wrapper owns the display and hosts
+  the panel in-process (`NEXTUI_OVERLAY_APP`, `overlay.host:true`,
+  `hud.policy:app` for volume/brightness/colortemp).
 - **Streaming** — the engine is a separate process owning fb0; the wrapper's SDL
-  is torn down. HOME/HUD must be drawn by the system fallback
-  (`NEXTUI_OVERLAY_SYSTEM`) or the stream must end first.
+  is torn down. `nextui_coop_overlay_suspend()` closes the panel, reports
+  `overlay.state open:false`, sends `overlay.host:false`, then `ap_quit()`.
+  From the acknowledgement onward HOME/HUD are the system fallback.
 
-Declaring `overlay` statically would claim HOME during streaming, where the
-wrapper cannot draw it. The capability stays off until phase A defines dynamic
-ownership. `scripts/nextui/make-pak.sh` contains the guarded switch:
-
-```sh
-# Only after phase A supports per-request/per-state ownership:
-MOONLIGHT_OVERLAY_CAPABILITY=1 ./scripts/nextui/make-pak.sh
-```
+`src/nextui_coop.c` performs the ordered transition from §7.9.3 and
+`tests/test_coop.c` asserts the request order against the SDK's fake devserv.
+The HUD uses NextUI's own `GFX_blitHardwareIndicator`; mute stays with the
+system because the app has no mute icon in its HUD.
 
 `src/nextui_coop.c` already answers the ownership question in code
 (`nextui_coop_overlay_owner()`), so M6 has one place to wire the protocol.
@@ -125,9 +129,11 @@ sudo apt install cmake pkg-config libsdl2-dev libsdl2-ttf-dev \
 ctest --test-dir build-host --output-on-failure
 ```
 
-`ctest` runs the upstream parser tests and `overlay-smoke`, which renders the
-real panel at 1024x768 into `build-host/overlay-smoke.png` using the vendored
-atlas and font.
+`ctest` runs seven host tests: the upstream parser tests, the stream-spawn
+argv/exit/ownership checks, the widget host bridge, NextUI's manifest parser,
+the full-fidelity panel render (`build-host/overlay-smoke.png`), the HUD render
+(`build-host/hud-smoke.png`), and the dynamic-ownership transition against the
+SDK's fake devserv.
 
 ### Toolchain layout
 
@@ -165,6 +171,9 @@ First launch creates `$SHARED_USERDATA_PATH/moonlight/`.
 | Settings | Left/Right | Change value |
 | Settings | A | Save |
 | Pairing / querying | B | Cancel |
+| Any menu screen | HOME | opens the NextUI panel (Resume/Close, Wi-Fi, Bluetooth, Exit) |
+| Panel | D-pad up/down, A | move, activate |
+| Panel | B | close, back to the app |
 | Streaming | engine defaults | exit combo is the engine's (see below) |
 
 The engine's own exit combination is unchanged by this port. The spruce build
@@ -186,8 +195,8 @@ The launcher sets `PATH`, `LD_LIBRARY_PATH`, `SDL_AUDIODRIVER=alsa`,
 `MOONLIGHT_KEY_DIR`, `CURL_CA_BUNDLE`, and `SSL_CERT_FILE`, then runs the app
 inside a C3 session (`nextui-session.sh`). It does not `exec` over itself, so
 the session's EXIT cleanup always runs. It does not write `/tmp/stay_awake`:
-NextUI does not read that file, and sleep inhibition moves to the SDK
-(`sleep.inhibit`) in M4.
+NextUI does not read that file; while streaming the wrapper holds an SDK
+`sleep.inhibit("streaming", 300000)` lease and refreshes it every 60 s.
 
 ## Engine shim
 
@@ -206,49 +215,56 @@ through `/bin/sh -c` because they parse CLI stdout.
 
 ## Known limits
 
-- **Streaming-time HOME/HUD is not in-process.** The engine owns the display;
-  until phase A provides dynamic ownership, NextUI's system fallback is the
-  only HOME/HUD owner during a stream. M6 either defers to the system or ends
-  the stream and reopens the menu.
-- **No sleep inhibit yet.** M4 adds `sleep.prepare` / `sleep.inhibit` /
-  `wake.done`. Until then the desktop's idle-sleep behavior is whatever NextUI
-  does for a foreground app.
-- **Overlay is built, not attached.** M2/A decides the data shape; the menu
-  still uses Apostrophe's own widgets today.
+- **Streaming-time HOME/HUD is system-owned.** The engine owns fb0, so the
+  wrapper yields hosting and NextUI's fallback panel/HUD is used during a
+  stream. The panel's Exit action ends the session through the launch parent.
+- **The app cannot host if devserv is absent.** `pak.json` declares `overlay`,
+  so HOME is never routed to the system panel for a live session. Without a
+  devserv the wrapper reads `KEY_HOMEPAGE` itself and opens its own panel; that
+  covers the menu, but there is no system fallback in that state.
+- **Mute HUD stays with the system.** The app draws volume, brightness and
+  colortemp with NextUI's `GFX_blitHardwareIndicator`; it has no mute icon, so
+  `hud.policy` leaves mute to keymon.
+- **Wi-Fi/Bluetooth toggles are data rows only.** `net.wifi`/`net.bluetooth`
+  have no backend in this NextUI build; the rows show state, and a toggle
+  returns "unavailable" rather than pretending to succeed.
 - **Input mapping is the largest baseline risk.** The engine uses SDL game
   controllers; if the Brick pad is not in SDL's controller database, a
   `gamecontrollerdb` mapping is required. Verify on device.
 - **1024x768 is the default and never actually streamed in host tests.** Host
-  tests cover packaging and rendering, not the network/video path.
+  tests cover packaging, rendering and the protocol transitions, not the
+  network/video path.
 - **1024x768 / 1280x720 / 640x480 only** are exposed in Settings; the Brick's
   native panel is 1024x768.
 - **SD card is FAT32.** Logs and config are small text files; no symlinks are
   used by the pak.
-- **The overlay renderer adds `libsamplerate.so.0` when M2 links it.** It is a
-  NextUI system library (`.system/tg5040/lib`), reached through the
-  `LD_LIBRARY_PATH` the launcher inherits; the pak does not bundle it. The
-  aarch64 CI job links `overlay-smoke` to prove that dependency resolves.
+- **`libsamplerate.so.0` is a runtime dependency.** The vendored NextUI
+  renderer references it; NextUI ships it in `.system/tg5040/lib`, reached
+  through the `LD_LIBRARY_PATH` the launcher inherits. The pak does not bundle
+  it. CI links an aarch64 binary to prove the dependency resolves.
 - **NextUI overlay code is PolyForm Noncommercial.** The pak is free; see
   `docs/THIRD-PARTY.md` before redistributing commercially.
 
-## Cooperation roadmap (M1-M6)
+## Cooperation layer (M1-M6)
 
-`src/nextui_coop.c` is the single seam. It currently tracks menu vs streaming
-state and answers the overlay-owner question; every SDK call is behind
-`NEXTUI_SDK` and a `#ifdef` block labelled with its M item.
+`src/nextui_coop.c` owns the app-side policy; `third_party/nextui-app-sdk`
+owns the protocol.
 
-- **M1** — connect to devserv, event pump, `ap_host_backend`.
-- **M2** — attach the host backend and use the vendored overlay in the menu.
-- **M3** — `system-feedback` HUD ownership (app in menu, system in stream).
-- **M4** — sleep/wake handshake; `sleep.inhibit("streaming")` held by the
-  stream lifetime; `nextui_coop_tick()` already runs in the stream wait loop.
-- **M5** — battery/status rows from the SDK.
-- **M6** — dynamic ownership: menu `handled_by_app`, streaming
-  `handled_by_system`; `pak.json` `overlay` capability enabled only then.
+- **M1** — connect + hello/subscribe, dedicated event thread, status snapshot.
+- **M2** — `ap_host_attach` + the Apostrophe widget bridge; HOME opens the
+  vendored panel; Exit requests a clean quit.
+- **M3** — `hud.policy` app for volume/brightness/colortemp; `feedback` events
+  draw NextUI's indicator for 1.6 s; mute stays system.
+- **M4** — `sleep.prepare` is acked in the menu and inhibited while streaming;
+  the stream holds and refreshes an automatic `sleep.inhibit` lease;
+  `wake.done` refreshes status.
+- **M5** — `status.snapshot`/`status.changed` feed the battery pill, Wi-Fi/Bluetooth
+  rows and HUD values.
+- **M6** — dynamic `overlay.host` transition in the §7.9.3 order, asserted by
+  `tests/test_coop.c`.
 
-`NEXTUI_SDK=ON` configures the build once phase A's C client lands; today it
-fails with a clear message rather than silently compiling a stub against a
-non-existent header.
+If the SDK's C client is missing from the submodule, `NEXTUI_SDK=ON` fails with
+a clear configure message instead of compiling a stub.
 
 ## License
 

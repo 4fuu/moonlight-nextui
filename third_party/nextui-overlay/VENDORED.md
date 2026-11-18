@@ -46,8 +46,9 @@ could drift from the real contract.
 - `src/platform_stubs.c` supplies the platform seam the surviving functions
   reach (`is_brick`, msettings getters, Wi-Fi/Bluetooth status, input hooks).
   M3/M5 replace the data source with SDK values; the renderer stays untouched.
-- The archive is currently **build-only**. M2 attaches it to the wrapper
-  through `ap_host_attach()`.
+- The archive is linked into the wrapper. `apostrophe_overlay_host.c` is
+  attached through `ap_host_attach()`, and the Apostrophe fork's widget bridge
+  drives poll/draw from `ap_poll_input()`/`ap_present()`.
 - The device must provide `libsamplerate` (NextUI ships it in
   `.system/<platform>/lib`), because `api.c`'s audio path references it even
   though the overlay itself does not use audio.
