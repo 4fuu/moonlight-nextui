@@ -1,5 +1,7 @@
 #define AP_IMPLEMENTATION
 #include "apostrophe.h"
+#define AP_HOST_IMPLEMENTATION
+#include "apostrophe_host.h"
 #define AP_WIDGETS_IMPLEMENTATION
 #include "apostrophe_widgets.h"
 
@@ -13,7 +15,12 @@
 static void run_app(void)
 {
     for (;;) {
+        if (nextui_coop_quit_requested())
+            return;
+
         main_action action = show_main_menu();
+        if (nextui_coop_quit_requested())
+            return;
         switch (action) {
         case MAIN_ACTION_STREAM:   stream_flow();    break;
         case MAIN_ACTION_PAIR:     pair_flow();       break;

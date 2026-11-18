@@ -1,6 +1,7 @@
 #include "apostrophe.h"
 #include "apostrophe_widgets.h"
 #include "moonlight.h"
+#include "nextui_coop.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -226,10 +227,11 @@ void stream_flow(void)
         const char *app_name = wd.apps[result.selected_index].name;
         ap_log("ui: launching stream for app: %s", app_name);
 
-        /* Streaming ownership: the engine is a separate process owning fb0,
-         * so the wrapper tears its SDL down and answers NEXTUI_OVERLAY_SYSTEM
-         * for the duration (dynamic ownership, phase A). It must not try to
-         * draw the in-process overlay until the stream has ended. */
+        /* Streaming ownership (contract 7.9.3): close the panel, report
+         * overlay.state closed, yield hosting, then tear down SDL. From the
+         * host:false acknowledgement onward HOME goes to the system panel,
+         * which is safe over the engine's fb0. */
+        nextui_coop_overlay_suspend();
         ap_quit();
         int stream_rc = ml_stream(&cfg, app_name);
 
@@ -242,8 +244,10 @@ void stream_flow(void)
         acfg.cpu_speed    = AP_CPU_SPEED_MENU;
         ap_init(&acfg);
 
-        /* M2 re-attaches the Apostrophe host backend here: ap_init() rebuilt
-         * the renderer, and the menu overlay owns HOME again. */
+        /* Streaming -> menu: rebuild the overlay against the new renderer and
+         * restore hosting; before the acknowledgement HOME stays with the
+         * system panel. */
+        nextui_coop_overlay_resume();
 
         if (stream_rc != 0) {
             char errmsg[128];

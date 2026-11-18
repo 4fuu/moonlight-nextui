@@ -39,10 +39,9 @@ int main(int argc, char** argv)
     CHECK(pak_manifest_is_safe_id(manifest.id), "id is a safe application id");
     CHECK(manifest.name[0] != '\0', "name is present");
     CHECK(manifest.version_valid, "version is a valid vX.Y.Z");
-    CHECK(manifest.capabilities_declared == 0,
-          "no capabilities array (static overlay claim is off)");
-    CHECK(!pak_manifest_has_capability(&manifest, PAK_CAPABILITY_OVERLAY),
-          "overlay capability is not declared");
+    CHECK(manifest.capabilities_declared == 1, "capabilities array is present");
+    CHECK(pak_manifest_has_capability(&manifest, PAK_CAPABILITY_OVERLAY),
+          "overlay capability is declared");
 
     printf("%s\n", failures == 0 ? "pak manifest tests passed" : "pak manifest tests FAILED");
     return failures == 0 ? 0 : 1;

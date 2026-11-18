@@ -175,9 +175,8 @@ static void test_cooperation_state(void)
     reset_logs();
     write_engine("sleep 1\nexit 0\n");
 
+    nextui_overlay_owner idle_owner = nextui_coop_overlay_owner();
     CHECK(!nextui_coop_streaming(), "idle before the stream");
-    CHECK(nextui_coop_overlay_owner() == NEXTUI_OVERLAY_APP,
-          "the menu owns the overlay while idle");
 
     stream_job job = { .cfg = base_config(), .rc = -1 };
     pthread_t thread;
@@ -195,8 +194,11 @@ static void test_cooperation_state(void)
     pthread_join(thread, NULL);
     CHECK(job.rc == 0, "stream returns the engine's status");
     CHECK(!nextui_coop_streaming(), "streaming is cleared after the stream");
-    CHECK(nextui_coop_overlay_owner() == NEXTUI_OVERLAY_APP,
-          "the menu owns the overlay again");
+    /* Without a hosting overlay (coop_init is not called in this test) the
+     * pre-stream owner is SYSTEM; a hosted menu restores APP. The point is
+     * that streaming forces SYSTEM and the previous answer comes back. */
+    CHECK(nextui_coop_overlay_owner() == idle_owner,
+          "the pre-stream owner is restored");
 }
 
 int main(void)
