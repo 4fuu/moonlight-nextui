@@ -21,11 +21,14 @@
 #include "moonlight.h"
 #include "nextui_coop.h"
 
+#include <errno.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 static int failures;
@@ -63,6 +66,64 @@ static void reset_logs(void)
 {
     unlink(argv_log);
     unlink(group_log);
+}
+
+static void write_sleeper_engine(const char* pid_path)
+{
+    char body[1024];
+    snprintf(body, sizeof(body),
+             "echo $$ > '%s'\n"
+             "trap 'exit 0' TERM\n"
+             "sleep 30\n",
+             pid_path);
+    write_engine(body);
+}
+
+static int read_pid(const char* path, pid_t* out)
+{
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    long value = 0;
+    int ok = fscanf(f, "%ld", &value) == 1;
+    fclose(f);
+    if (!ok || value <= 0) return 0;
+    *out = (pid_t)value;
+    return 1;
+}
+
+static int wait_for_engine(const char* path, pid_t* out, int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms / 20; i++) {
+        if (read_pid(path, out)) return 1;
+        usleep(20 * 1000);
+    }
+    return 0;
+}
+
+static int pid_gone(pid_t pid, int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms / 50; i++) {
+        if (kill(pid, 0) < 0 && errno == ESRCH) return 1;
+        usleep(50 * 1000);
+    }
+    return 0;
+}
+
+static int wait_child(pid_t pid, int* status, int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms / 50; i++) {
+        pid_t r = waitpid(pid, status, WNOHANG);
+        if (r == pid) return 1;
+        if (r < 0 && errno != EINTR) return 0;
+        usleep(50 * 1000);
+    }
+    return 0;
+}
+
+static void test_timeout(int sig)
+{
+    (void)sig;
+    _exit(2);
 }
 
 static char* read_file(const char* path)
@@ -169,6 +230,149 @@ static void* run_stream(void* arg)
     return NULL;
 }
 
+static void test_config_format(void)
+{
+    printf("config format\n");
+    char userdata[640];
+    snprintf(userdata, sizeof(userdata), "%s/userdata", tmpdir);
+    mkdir(userdata, 0755);
+    setenv("SHARED_USERDATA_PATH", userdata, 1);
+
+    ml_config cfg = base_config();
+    CHECK(save_config(&cfg) == 0, "config saves");
+
+    char path[640];
+    snprintf(path, sizeof(path), "%s/moonlight/config.txt", userdata);
+    char* text = read_file(path);
+    CHECK(text && strstr(text, "width = 1024") != NULL,
+          "new config uses key = value (engine-compatible)");
+
+    FILE* f = fopen(path, "w");
+    if (f) {
+        fputs("width=640\nheight=480\n", f);
+        fclose(f);
+    }
+    ml_config legacy = load_config();
+    CHECK(legacy.width == 640 && legacy.height == 480,
+          "legacy key=value config still loads");
+
+    f = fopen(path, "w");
+    if (f) {
+        fputs("width = 1280\nheight = 720\n", f);
+        fclose(f);
+    }
+    ml_config spaced = load_config();
+    CHECK(spaced.width == 1280 && spaced.height == 720,
+          "spaced key = value config loads");
+}
+
+static void test_atexit_terminates_engine(void)
+{
+    printf("atexit cleanup\n");
+
+    char pid_path[640];
+    snprintf(pid_path, sizeof(pid_path), "%s/atexit-engine.pid", tmpdir);
+    unlink(pid_path);
+    write_sleeper_engine(pid_path);
+
+    pid_t wrapper = fork();
+    if (wrapper == 0) {
+        stream_job job = { .cfg = base_config(), .rc = -1 };
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_stream, &job) != 0)
+            _exit(3);
+        pid_t engine = 0;
+        (void)wait_for_engine(pid_path, &engine, 2000);
+        usleep(300 * 1000);
+        exit(0); /* atexit must stop the engine */
+    }
+
+    CHECK(wrapper > 0, "wrapper child started");
+    int status = 0;
+    if (!wait_child(wrapper, &status, 6000)) {
+        kill(wrapper, SIGKILL);
+        (void)waitpid(wrapper, NULL, 0);
+        CHECK(0, "wrapper exits");
+        return;
+    }
+    CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 0,
+          "wrapper exits normally with status 0");
+
+    pid_t engine = 0;
+    CHECK(read_pid(pid_path, &engine), "engine pid was recorded");
+    if (engine > 0)
+        CHECK(pid_gone(engine, 4000), "engine is gone after wrapper exit");
+}
+
+static void test_signal_terminates_engine(void)
+{
+    printf("signal cleanup\n");
+
+    char pid_path[640];
+    snprintf(pid_path, sizeof(pid_path), "%s/signal-engine.pid", tmpdir);
+    unlink(pid_path);
+    write_sleeper_engine(pid_path);
+
+    pid_t wrapper = fork();
+    if (wrapper == 0) {
+        stream_job job = { .cfg = base_config(), .rc = -1 };
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_stream, &job) != 0)
+            _exit(3);
+        pid_t engine = 0;
+        (void)wait_for_engine(pid_path, &engine, 2000);
+        for (;;)
+            pause();
+    }
+
+    CHECK(wrapper > 0, "wrapper child started");
+    pid_t engine = 0;
+    CHECK(wait_for_engine(pid_path, &engine, 3000), "engine started");
+
+    kill(wrapper, SIGTERM);
+    int status = 0;
+    if (!wait_child(wrapper, &status, 6000)) {
+        kill(wrapper, SIGKILL);
+        (void)waitpid(wrapper, NULL, 0);
+        CHECK(0, "wrapper exits after SIGTERM");
+        return;
+    }
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM,
+          "wrapper re-raises SIGTERM after cleanup");
+    if (engine > 0)
+        CHECK(pid_gone(engine, 4000), "engine is gone after SIGTERM");
+}
+
+static void test_quit_flag_terminates_engine(void)
+{
+    printf("quit flag cleanup\n");
+
+    char pid_path[640];
+    snprintf(pid_path, sizeof(pid_path), "%s/quit-engine.pid", tmpdir);
+    unlink(pid_path);
+    write_sleeper_engine(pid_path);
+
+    stream_job job = { .cfg = base_config(), .rc = -1 };
+    pthread_t thread;
+    CHECK(pthread_create(&thread, NULL, run_stream, &job) == 0,
+          "stream thread started");
+
+    pid_t engine = 0;
+    CHECK(wait_for_engine(pid_path, &engine, 3000), "engine started");
+
+    /* This is the overlay Exit action's flag, not a host unwind. */
+    nextui_coop_request_quit();
+    signal(SIGALRM, test_timeout);
+    alarm(10);
+    pthread_join(thread, NULL);
+    alarm(0);
+
+    CHECK(job.rc == 0, "quit flag returns success");
+    CHECK(nextui_coop_quit_requested(), "quit flag stays set");
+    if (engine > 0)
+        CHECK(pid_gone(engine, 4000), "engine is gone after quit flag");
+}
+
 static void test_cooperation_state(void)
 {
     printf("cooperation state\n");
@@ -218,7 +422,11 @@ int main(void)
     test_argv_transparency();
     test_exit_status();
     test_process_group();
+    test_config_format();
     test_cooperation_state();
+    test_atexit_terminates_engine();
+    test_signal_terminates_engine();
+    test_quit_flag_terminates_engine();
 
     char cmd[600];
     snprintf(cmd, sizeof(cmd), "rm -rf '%s'", tmpdir);

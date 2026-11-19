@@ -50,8 +50,13 @@ Local changes to the snapshot (kept to a minimum so it can be refreshed):
 1. `vendor/platform.h` — `SDCARD_PATH` is wrapped in `#ifndef` so the host
    render smoke test can point the resource loader at a scratch directory.
    Device builds keep `/mnt/SDCARD`.
-2. `vendor/` files are otherwise byte-identical to NextUI `2cc6eaf`.
-3. `src/platform_stubs.c` (MIT, this repo) supplies the platform seam the
+2. `vendor/apostrophe_overlay_host.c` — `host_exit_to_desktop()` no longer
+   calls `ap_host_request_quit()` itself. The app callback owns the decision:
+   it sets the stream quit flag while an engine is running and requests the
+   host quit only in the menu. This prevents the overlay Exit path from
+   unwinding the process before `ml_stream()` stops the engine.
+3. `vendor/` files are otherwise byte-identical to NextUI `2cc6eaf`.
+4. `src/platform_stubs.c` (MIT, this repo) supplies the platform seam the
    overlay path reaches: `is_brick`/`is_brickpro`, the msettings getters, and
    the Wi-Fi/Bluetooth status calls. M3/M5 replace the data source with the
    SDK; the renderer itself is untouched.

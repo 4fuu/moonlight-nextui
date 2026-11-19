@@ -180,6 +180,7 @@ if(NEXTUI_BUILD_TESTS)
     add_executable(test_stream_spawn
         tests/test_stream_spawn.c
         tests/apostrophe_impl.c
+        src/config.c
         src/moonlight_cli.c
         src/nextui_coop.c
     )

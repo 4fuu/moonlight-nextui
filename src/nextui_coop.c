@@ -228,7 +228,16 @@ static int overlay_resume(void* user)
 static int overlay_exit_to_desktop(void* user)
 {
     (void)user;
-    atomic_store(&s_quit, 1);
+
+    /* Always set the flag ml_stream() polls first. During a stream the engine
+     * owns the display, so unwinding the widget loop here would bypass the
+     * child cleanup; let ml_stream() stop the engine and return to main. In
+     * the menu there is no child, so the host quit request is safe. */
+    nextui_coop_request_quit();
+    if (atomic_load(&s_streaming)) {
+        ap_log("nextui: exit to desktop while streaming; ml_stream will stop the engine");
+        return 1;
+    }
     return ap_host_request_quit();
 }
 
@@ -658,7 +667,7 @@ void nextui_coop_init(void)
 
     NextuiAppConfig config;
     memset(&config, 0, sizeof(config));
-    config.client_name = "moonlight/0.3.4";
+    config.client_name = "moonlight/0.3.5";
     config.connect_timeout_ms = 1500;
     config.io_timeout_ms = 1500;
     config.log = log_sdk;
@@ -854,6 +863,11 @@ bool nextui_coop_overlay_open(void)
 bool nextui_coop_quit_requested(void)
 {
     return atomic_load(&s_quit) != 0;
+}
+
+void nextui_coop_request_quit(void)
+{
+    atomic_store(&s_quit, 1);
 }
 
 const char* nextui_coop_state_string(void)

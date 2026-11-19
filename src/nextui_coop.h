@@ -60,6 +60,10 @@ bool nextui_coop_overlay_open(void);
  * Exit action). ml_stream() terminates the engine; main() leaves the loop. */
 bool nextui_coop_quit_requested(void);
 
+/* Set the same quit flag the stream loop polls. The overlay's Exit action uses
+ * this instead of unwinding the widget loop while an engine is running. */
+void nextui_coop_request_quit(void);
+
 /* A short human-readable state line for logs/tests. */
 const char *nextui_coop_state_string(void);
 
