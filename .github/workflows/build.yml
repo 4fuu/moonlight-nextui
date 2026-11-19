@@ -51,12 +51,13 @@ jobs:
       - name: Run tests
         run: ctest --test-dir build-host --output-on-failure
 
-      - name: Validate shell scripts
+      - name: Validate scripts
         run: |
           shellcheck -s sh \
             Tools/tg5040/Moonlight.pak/launch.sh \
             shim/moonlight \
             scripts/nextui/*.sh
+          python3 -m py_compile scripts/nextui/check-libs.py
           sh -n Tools/tg5040/Moonlight.pak/launch.sh
           sh -n shim/moonlight
 
@@ -141,6 +142,12 @@ jobs:
 
       - name: Package Moonlight.pakz
         run: ./scripts/nextui/make-pak.sh
+
+      - name: Check the engine library closure
+        run: |
+          READELF="${CROSS_TRIPLE}-readelf" \
+            python3 scripts/nextui/check-libs.py dist/Moonlight.pak \
+              --sysroot "$SYSROOT"
 
       - name: Verify pak layout
         run: |

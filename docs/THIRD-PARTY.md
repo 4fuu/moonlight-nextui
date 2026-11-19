@@ -13,7 +13,7 @@ file records provenance and licenses for every piece.
 | nextui-app-sdk | `third_party/nextui-app-sdk` submodule, linked into the wrapper | MIT | <https://github.com/4fuu/nextui-app-sdk> at `27e5597` (client 1.0.0, protocol 1) |
 | NextUI full-fidelity overlay renderer (vendored) | `third_party/nextui-overlay/vendor/` | PolyForm Noncommercial 1.0.0 | <https://github.com/4fuu/NextUI> at `2cc6eaf` |
 | moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | spruce 2.7.0 build; see below |
-| Bundled runtime libraries (22 files) | `engine/bin/libs/` | per-library, see below | spruceOS / Ubuntu 20.04 aarch64 multiarch |
+| Bundled runtime libraries (43 files) | `engine/bin/libs/` | per-library, see below | spruceOS + Ubuntu 20.04 focal arm64 |
 
 The pak also ships `licenses/` inside the archive with the wrapper MIT text,
 the Apostrophe MIT text, the NextUI PolyForm text, the GPL-3.0 text, and this
@@ -83,15 +83,36 @@ socket; the protocol contract is in the SDK repository.
 
 ## Bundled runtime libraries
 
-All files live in `engine/bin/libs/` and are the spruce 2.7.0 closure. They are
-aarch64, glibc <= 2.29 symbols, and were taken unmodified from the same spruce
-package.
+All files live in `engine/bin/libs/` and are aarch64. They are the complete
+non-system closure of the engine and the wrapper's vendored overlay:
+
+- The 22 original spruce 2.7.0 libraries are taken unmodified from the spruce
+  package.
+- The 21 second-level dependencies restored in v0.3.3 are the matching Ubuntu
+  20.04 focal arm64 packages (the distribution the spruce build targets), so
+  the sonames and glibc symbol versions line up. v0.3.2 shipped without them
+  and `bin/moonlight` failed at startup on `libpulsecommon-13.99.so`.
+
+Source packages for the restored files (Ubuntu focal arm64, release pocket):
+`libpulse0` 13.99.1-1ubuntu3, `libsndfile1` 1.0.28-7, `libflac8` 1.3.3-1build1,
+`libogg0` 1.3.4-0ubuntu1, `libvorbis0a`/`libvorbisenc2` 1.3.6-2ubuntu1,
+`libasyncns0` 0.8-6, `libwrap0` 7.6.q-30, `libbsd0` 0.10.0-1, `libxau6`
+1.0.9-0ubuntu1, `libxcb1` 1.14-2, `libxdmcp6` 1.1.3-0ubuntu1, `libnsl2`
+1.3.0-2build2, `libtirpc3` 1.2.5-1, `libgssapi-krb5-2`/`libkrb5-3`/
+`libk5crypto3`/`libkrb5support0` 1.17-6ubuntu4, `libkeyutils1` 1.6-6ubuntu1,
+`libcom-err2` 1.45.5-2ubuntu1, and `libcrypto.so.1.1` from `libssl1.1`
+1.1.1f-1ubuntu2 (the `libssl.so.1.1` half is not bundled).
+
+`scripts/nextui/check-libs.py` resolves `NEEDED` for `bin/moonlight` and every
+bundled library; `make-pak.sh` and CI fail if a soname is neither bundled nor
+part of the explicit device contract (`BASE_ALLOW` in that script).
 
 | Library | Project | License |
 |---|---|---|
 | `libavcodec.so.58`, `libavutil.so.56`, `libswresample.so.3` | FFmpeg 4.4.5 | LGPL-2.1-or-later (built without `--enable-gpl`) |
 | `libavahi-client.so.3`, `libavahi-common.so.3` | Avahi | LGPL-2.1-or-later |
-| `libcrypto.so.3`, `libssl.so.3` | OpenSSL 3.3.1 | Apache-2.0 |
+| `libcrypto.so.3`, `libssl.so.3` | OpenSSL 3.3.1 (engine/curl) | Apache-2.0 |
+| `libcrypto.so.1.1` | OpenSSL 1.1.1 (Kerberos) | Apache-2.0 |
 | `libcurl.so.4` | curl 8.7.1 | curl license (MIT-like) |
 | `libdbus-1.so.3` | D-Bus | AFL-2.1 or GPL-2.0-or-later (dual) |
 | `libevdev.so.2` | libevdev | MIT |
@@ -102,16 +123,30 @@ package.
 | `liblz4.so.1` | LZ4 | BSD-2-Clause |
 | `liblzma.so.5` | XZ Utils | 0BSD / public domain |
 | `libopus.so.0` | Opus | BSD-3-Clause |
-| `libpulse.so.0`, `libpulse-simple.so.0` | PulseAudio | LGPL-2.1-or-later |
+| `libpulse.so.0`, `libpulse-simple.so.0`, `libpulsecommon-13.99.so` | PulseAudio 13.99 | LGPL-2.1-or-later |
+| `libsndfile.so.1` | libsndfile 1.0.28 | LGPL-2.1-or-later |
+| `libFLAC.so.8` | FLAC 1.3.3 | BSD-3-Clause |
+| `libogg.so.0` | Ogg | BSD-3-Clause |
+| `libvorbis.so.0`, `libvorbisenc.so.2` | Vorbis | BSD-3-Clause |
+| `libasyncns.so.0` | libasyncns | LGPL-2.1-or-later |
+| `libwrap.so.0` | tcp_wrappers | BSD-3-Clause |
+| `libbsd.so.0` | libbsd | BSD-2-Clause / BSD-3-Clause |
+| `libnsl.so.1` | libnsl | LGPL-2.1-or-later |
+| `libtirpc.so.3` | libtirpc | BSD-3-Clause |
+| `libgssapi_krb5.so.2`, `libkrb5.so.3`, `libk5crypto.so.3`, `libkrb5support.so.0` | MIT Kerberos 5 | MIT |
+| `libcom_err.so.2` | e2fsprogs | LGPL-2.1 |
+| `libkeyutils.so.1` | keyutils | LGPL-2.1-or-later |
+| `libxcb.so.1` | libxcb | MIT |
+| `libXau.so.6` | libXau | MIT |
+| `libXdmcp.so.6` | libXdmcp | MIT |
 | `libsystemd.so.0` | systemd | LGPL-2.1-or-later |
 | `libuuid.so.1` | util-linux | BSD-3-Clause |
 
 Device-provided, deliberately **not** bundled (the firmware image supplies
 them): glibc, `libSDL2-2.0.so.0` (zlib), `libasound.so.2` (LGPL-2.1),
-`libudev.so.1` (LGPL-2.1), `libz.so.1`, `libsamplerate.so.0` (BSD-2-Clause;
-NextUI stages it in `.system/<platform>/lib`), and PulseAudio's private
-`libpulsecommon-13.99.so` (LGPL-2.1). The device test checklist verifies these
-resolve on a real Brick.
+`libudev.so.1` (LGPL-2.1), `libz.so.1`, and `libsamplerate.so.0` (BSD-2-Clause;
+NextUI stages it in `.system/<platform>/lib` for the vendored overlay). The
+device test checklist verifies these resolve on a real Brick.
 
 ## This repository
 

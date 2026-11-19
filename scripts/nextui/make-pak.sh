@@ -76,6 +76,14 @@ if [ -n "${CROSS_TRIPLE:-}" ]; then
         exit 1
     fi
 fi
+
+# The engine is copied unmodified, so its whole shared-library closure has to
+# be inside the pak or come from the device. v0.3.2 shipped without the
+# PulseAudio/audio tail (libpulsecommon and friends) and failed to start on
+# device; this check is the regression guard for that.
+READELF="${CROSS_TRIPLE:+${CROSS_TRIPLE}-readelf}" \
+    python3 "$ROOT/scripts/nextui/check-libs.py" "$PAK"
+
 test -x "$PAK/launch.sh"
 test -x "$PAK/shim/moonlight"
 python3 -m json.tool "$PAK/pak.json" >/dev/null
