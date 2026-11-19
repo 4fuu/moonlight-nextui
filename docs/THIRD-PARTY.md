@@ -13,7 +13,7 @@ file records provenance and licenses for every piece.
 | nextui-app-sdk | `third_party/nextui-app-sdk` submodule, linked into the wrapper | MIT | <https://github.com/4fuu/nextui-app-sdk> at `27e5597` (client 1.0.0, protocol 1) |
 | NextUI full-fidelity overlay renderer (vendored) | `third_party/nextui-overlay/vendor/` | PolyForm Noncommercial 1.0.0 | <https://github.com/4fuu/NextUI> at `2cc6eaf` |
 | moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | spruce 2.7.0 build; see below |
-| Bundled runtime libraries (43 files) | `engine/bin/libs/` | per-library, see below | spruceOS + Ubuntu 20.04 focal arm64 |
+| Bundled runtime libraries (35 files) | `engine/bin/libs/` | per-library, see below | spruceOS + Ubuntu 20.04 focal arm64 |
 
 The pak also ships `licenses/` inside the archive with the wrapper MIT text,
 the Apostrophe MIT text, the NextUI PolyForm text, the GPL-3.0 text, and this
@@ -88,31 +88,36 @@ non-system closure of the engine and the wrapper's vendored overlay:
 
 - The 22 original spruce 2.7.0 libraries are taken unmodified from the spruce
   package.
-- The 21 second-level dependencies restored in v0.3.3 are the matching Ubuntu
+- The 13 second-level dependencies restored in v0.3.3 are the matching Ubuntu
   20.04 focal arm64 packages (the distribution the spruce build targets), so
   the sonames and glibc symbol versions line up. v0.3.2 shipped without them
   and `bin/moonlight` failed at startup on `libpulsecommon-13.99.so`.
+- `libnsl.so.1` **must** come from focal's `libc6` (2.31), not from the
+  standalone `libnsl2` package. `libwrap.so.0` references
+  `yp_get_default_domain@GLIBC_2.17`; only the glibc build exports that
+  versioned symbol. The pinned file is `8fcd6dfd...`, the same one the
+  spruce package ships.
 
 Source packages for the restored files (Ubuntu focal arm64, release pocket):
 `libpulse0` 13.99.1-1ubuntu3, `libsndfile1` 1.0.28-7, `libflac8` 1.3.3-1build1,
 `libogg0` 1.3.4-0ubuntu1, `libvorbis0a`/`libvorbisenc2` 1.3.6-2ubuntu1,
 `libasyncns0` 0.8-6, `libwrap0` 7.6.q-30, `libbsd0` 0.10.0-1, `libxau6`
-1.0.9-0ubuntu1, `libxcb1` 1.14-2, `libxdmcp6` 1.1.3-0ubuntu1, `libnsl2`
-1.3.0-2build2, `libtirpc3` 1.2.5-1, `libgssapi-krb5-2`/`libkrb5-3`/
-`libk5crypto3`/`libkrb5support0` 1.17-6ubuntu4, `libkeyutils1` 1.6-6ubuntu1,
-`libcom-err2` 1.45.5-2ubuntu1, and `libcrypto.so.1.1` from `libssl1.1`
-1.1.1f-1ubuntu2 (the `libssl.so.1.1` half is not bundled).
+1.0.9-0ubuntu1, `libxcb1` 1.14-2, `libxdmcp6` 1.1.3-0ubuntu1, and
+`libnsl.so.1` from `libc6` 2.31-0ubuntu9.
 
 `scripts/nextui/check-libs.py` resolves `NEEDED` for `bin/moonlight` and every
 bundled library; `make-pak.sh` and CI fail if a soname is neither bundled nor
-part of the explicit device contract (`BASE_ALLOW` in that script).
+part of the explicit device contract (`BASE_ALLOW` in that script). CI then
+runs the real loader through `qemu-aarch64-static` with focal glibc 2.31 (the
+generation the engine targets) and the toolchain sysroot for the rest of the
+runtime (`bin/moonlight --version`). That also resolves symbol versions: a
+library with the right soname but the wrong versioned symbols still fails.
 
 | Library | Project | License |
 |---|---|---|
 | `libavcodec.so.58`, `libavutil.so.56`, `libswresample.so.3` | FFmpeg 4.4.5 | LGPL-2.1-or-later (built without `--enable-gpl`) |
 | `libavahi-client.so.3`, `libavahi-common.so.3` | Avahi | LGPL-2.1-or-later |
 | `libcrypto.so.3`, `libssl.so.3` | OpenSSL 3.3.1 (engine/curl) | Apache-2.0 |
-| `libcrypto.so.1.1` | OpenSSL 1.1.1 (Kerberos) | Apache-2.0 |
 | `libcurl.so.4` | curl 8.7.1 | curl license (MIT-like) |
 | `libdbus-1.so.3` | D-Bus | AFL-2.1 or GPL-2.0-or-later (dual) |
 | `libevdev.so.2` | libevdev | MIT |
@@ -131,11 +136,7 @@ part of the explicit device contract (`BASE_ALLOW` in that script).
 | `libasyncns.so.0` | libasyncns | LGPL-2.1-or-later |
 | `libwrap.so.0` | tcp_wrappers | BSD-3-Clause |
 | `libbsd.so.0` | libbsd | BSD-2-Clause / BSD-3-Clause |
-| `libnsl.so.1` | libnsl | LGPL-2.1-or-later |
-| `libtirpc.so.3` | libtirpc | BSD-3-Clause |
-| `libgssapi_krb5.so.2`, `libkrb5.so.3`, `libk5crypto.so.3`, `libkrb5support.so.0` | MIT Kerberos 5 | MIT |
-| `libcom_err.so.2` | e2fsprogs | LGPL-2.1 |
-| `libkeyutils.so.1` | keyutils | LGPL-2.1-or-later |
+| `libnsl.so.1` | glibc libnsl (NIS compat) | LGPL-2.1-or-later |
 | `libxcb.so.1` | libxcb | MIT |
 | `libXau.so.6` | libXau | MIT |
 | `libXdmcp.so.6` | libXdmcp | MIT |

@@ -20,7 +20,7 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
 | Full-fidelity overlay renderer vendored and building | done, S1/S2 |
-| HOME panel | **system fallback by default** (v0.3.3) |
+| HOME panel | **system fallback by default** (v0.3.4) |
 | In-process full-fidelity panel | opt-in, `MOONLIGHT_INPROCESS_OVERLAY=1` |
 | Volume/brightness HUD cooperation | done, M3 (system HUD by default) |
 | Sleep/wake handshake + stream inhibit | done, M4 |
@@ -69,7 +69,7 @@ subsystems into the app process.
 `pak.json` declares `"capabilities": ["overlay"]` — the permission, not a
 lifetime claim. The effective host is runtime session state (contract §7.9).
 
-**Default (v0.3.3): the app yields hosting for the whole session.** It sends
+**Default (v0.3.4): the app yields hosting for the whole session.** It sends
 `overlay.host:false` at connect, so HOME and the HUD are NextUI's system
 panel/keymon. That panel is the full-fidelity reference, and it is the
 responsive path: the app process does not render, does not read pad input for
@@ -247,14 +247,17 @@ host to close the streamed app when the local session ends.
 | Engine | `bin/moonlight` + `bin/libs/` inside the pak |
 | Shim | `shim/moonlight` first on `PATH` |
 
-`bin/libs/` is the complete non-system closure: 43 libraries, including the
+`bin/libs/` is the complete non-system closure: 35 libraries, including the
 PulseAudio/audio tail (`libpulsecommon-13.99`, libsndfile, FLAC, Vorbis, Ogg),
-xcb/X11, and libnsl with its Kerberos tail. `scripts/nextui/check-libs.py`
+xcb/X11, and the focal glibc `libnsl.so.1` that `libwrap.so.0` expects. `scripts/nextui/check-libs.py`
 resolves every `NEEDED` entry in `bin/moonlight` and `bin/libs/*` and fails on
 anything that is neither bundled nor on the explicit device-library list;
 `make-pak.sh` runs it before zipping and CI runs it again with the toolchain
-sysroot. v0.3.2 shipped without the second-level dependencies and could not
-start `bin/moonlight` on device.
+sysroot. CI also dry-runs `bin/moonlight --version` through
+`qemu-aarch64-static` with focal glibc and the sysroot runtime, so
+symbol-version mismatches fail the build. v0.3.2 shipped without the second-level dependencies and could not
+start `bin/moonlight` on device; v0.3.3 then shipped a libnsl without the
+`GLIBC_2.17` symbols `libwrap.so.0` references.
 
 The launcher sets `PATH`, `LD_LIBRARY_PATH`, `SDL_AUDIODRIVER=alsa`,
 `MOONLIGHT_KEY_DIR`, `CURL_CA_BUNDLE`, and `SSL_CERT_FILE`, then runs the app
