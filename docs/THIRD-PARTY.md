@@ -12,7 +12,7 @@ file records provenance and licenses for every piece.
 | Apostrophe (UI framework) | `third_party/apostrophe` submodule | MIT | <https://github.com/4fuu/Apostrophe> at `70ae5a4` (fork of `Helaas/Apostrophe`) |
 | nextui-app-sdk | `third_party/nextui-app-sdk` submodule, linked into the wrapper | MIT | <https://github.com/4fuu/nextui-app-sdk> at `27e5597` (client 1.0.0, protocol 1) |
 | NextUI full-fidelity overlay renderer (vendored) | `third_party/nextui-overlay/vendor/` | PolyForm Noncommercial 1.0.0 | <https://github.com/4fuu/NextUI> at `2cc6eaf` |
-| moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | spruce 2.7.0 build; see below |
+| moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | upstream 2.7.1 experiment built by the spruce chain; see below |
 | Bundled runtime libraries (35 files) | `engine/bin/libs/` | per-library, see below | spruceOS + Ubuntu 20.04 focal arm64 |
 
 The pak also ships `licenses/` inside the archive with the wrapper MIT text,
@@ -58,20 +58,27 @@ Local changes to the snapshot (kept to a minimum so it can be refreshed):
 
 ## Streaming engine
 
-The engine is **not rebuilt here**. `engine/bin/` is copied unmodified from
-spruceOS's shipped Moonlight app:
+`engine/bin/` is the output of `engine/Dockerfile` and `engine/build.sh`, a
+vendored copy of the spruce build chain
+(<https://github.com/spruceUI/Moonlight-spruce>, Ubuntu 20.04 focal, glibc
+2.31). The v0.4.0-exp1 branch builds the upstream **2.7.1** release:
 
-- `spruceUI/spruceOS` `Development`, `App/Moonlight/ports/moonlightnew/moonlight/`
-  (binary `moonlight` and its `libs/` closure).
-- Version: moonlight-embedded **2.7.0**, built by
-  <https://github.com/spruceUI/Moonlight-spruce> against moonlight-embedded
-  commit `274d3db34da764344a7a402ee74e6080350ac0cd`, OpenSSL 3.3.1,
-  curl 8.7.1, and a minimal FFmpeg 4.4.5. The build script is the authoritative
-  recipe: <https://github.com/spruceUI/Moonlight-spruce/blob/main/build.sh>.
-- Corresponding source: <https://github.com/moonlight-stream/moonlight-embedded>
-  at the commit above, plus the build inputs named by that script.
-- `engine/SHA256SUMS` records every bundled binary. No file in `engine/` is
-  modified by this repository.
+- moonlight-embedded `775444287305849ebdf4736c75298ad0713e2d5d` (v2.7.1).
+- moonlight-common-c `b126e481a195fdc7152d211def17190e3434bcce`.
+- ENet `dea6fb5414b180908b58c0293c831105b5d124dd` (the common-c submodule).
+- OpenSSL 3.3.1, curl 8.7.1, and the same minimal FFmpeg 4.4.5 as the spruce
+  chain.
+
+`engine/build.sh` pins the three commits and fails if a submodule resolves to
+anything else, then collects the full shared-library closure. CI builds the
+engine in the spruce container (`engine-build` job) and uploads it; the pak job
+packages the committed `engine/bin/`. The 2.7.0 baseline remains in `main`; to
+revert the experiment, restore `engine/bin/` from `main` and rebuild the pak.
+
+- Corresponding source: the upstream commits above plus the build inputs named
+  by `engine/build.sh`.
+- `engine/SHA256SUMS` records every bundled binary. `engine/build.sh` strips
+  and copies the binaries; no engine source is modified by this repository.
 
 The wrapper executes the engine as a separate process through the PATH shim
 (`shim/moonlight`). GPL-3.0 applies to the engine and its GameStream libraries;

@@ -1,9 +1,11 @@
 # NextUI port (TrimUI Brick / tg5040)
 
 Moonlight game streaming for NextUI, built from source in this repository.
-The streaming engine is the spruce 2.7.0 moonlight-embedded build, bundled
-unmodified; everything else — the Apostrophe UI wrapper, the launcher, the
-cooperation seam, and the full-fidelity overlay renderer — is built here.
+On `main` the streaming engine is the spruce 2.7.0 moonlight-embedded build,
+bundled unmodified. The `v0.4.0-exp1` experiment branch instead builds upstream
+2.7.1 with the spruce toolchain (see the engine experiment section); everything
+else — the Apostrophe UI wrapper, the launcher, the cooperation seam, and the
+full-fidelity overlay renderer — is built here.
 
 - Upstream wrapper: <https://github.com/richieszemeredi/nextui-moonlight-pak> (MIT)
 - This port: <https://github.com/4fuu/moonlight-nextui>
@@ -140,6 +142,36 @@ devserv (`coop-transitions` and `coop-system-fallback`).
 
 `src/nextui_coop.c` already answers the ownership question in code
 (`nextui_coop_overlay_owner()`), so M6 has one place to wire the protocol.
+
+## Engine 2.7.1 experiment (v0.4.0-exp1)
+
+This branch is a bounded experiment, not the final streaming fix. It replaces
+the bundled spruce 2.7.0 engine with upstream moonlight-embedded **2.7.1**
+(`7754442`), moonlight-common-c `b126e48` and ENet `dea6fb5`, built by the same
+spruce toolchain (`engine/Dockerfile`, `engine/build.sh`). The common-c/ENet
+wakeup, control-receive ping and RTT-locking changes are the reason for the
+upgrade; they target the client control ENet host that stops sending periodic
+pings after about 70 ms and is then timed out by the host at 5-6 s.
+
+The experiment deliberately does **not** include the 0x0D haptics patch (T3,
+PR #7) or a hardware decoder. T6 confirmed the device has no V4L2 M2M device and
+no cedrus driver; hardware decode would require a legacy libcedarc backend, so
+this experiment keeps the software H.264 path. If the upgrade does not fix the
+disconnect, the next step is a targeted control-flow watchdog, not a blind
+further upgrade.
+
+Build it in CI (the `engine-build` job runs on the experiment branch) or with
+Docker locally:
+
+```sh
+docker build -t moonlight-engine-v271 engine
+mkdir -p engine-out
+docker run --rm -v "$PWD/engine-out:/output" moonlight-engine-v271
+```
+
+Replace `engine/bin/moonlight` and `engine/bin/libs/` with `engine-out/`, update
+`engine/SHA256SUMS`, then run `./scripts/nextui/make-pak.sh`. To revert, restore
+`engine/bin/` from `main`; no wrapper change is involved.
 
 ## Build
 

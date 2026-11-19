@@ -3,7 +3,8 @@ name: Build Moonlight.pakz
 # The host orb has no Docker, so this workflow is the authoritative aarch64
 # build: it cross-compiles the Apostrophe wrapper and the vendored NextUI
 # overlay renderer inside the NextUI toolchain image, then packages the pak
-# with the bundled spruce 2.7.0 engine.
+# with the bundled spruce engine (2.7.0 on main; the v2.7.1 experiment branch
+# rebuilds the engine with engine/Dockerfile and commits the result).
 #
 # host-checks runs the same host build and tests a developer runs locally
 # (scripts/nextui/build.sh host, ctest), plus shellcheck and manifest checks.
@@ -27,6 +28,46 @@ permissions:
   contents: read
 
 jobs:
+  # Bounded experiment: build the upstream v2.7.1 engine with the spruce
+  # toolchain and upload it. The pak job still packages the committed
+  # engine/bin, so a failed or unreviewed experiment cannot change main.
+  engine-build:
+    name: Build engine v2.7.1 (experiment)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.ref, 'engine-v271-experiment') ||
+      contains(github.head_ref, 'engine-v271-experiment')
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Build the engine in the spruce container
+        run: |
+          set -e
+          docker build -t moonlight-engine-v271 engine
+          mkdir -p engine-out
+          docker run --rm -v "$PWD/engine-out:/output" moonlight-engine-v271
+
+      - name: Inspect the engine artifact
+        run: |
+          set -e
+          file engine-out/moonlight
+          file engine-out/moonlight | grep -q 'ARM aarch64'
+          test -x engine-out/moonlight
+          echo "shared libraries: $(find engine-out/libs -maxdepth 1 -name '*.so*' | wc -l)"
+          ls engine-out/libs
+
+      - name: Upload the engine artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-v2.7.1
+          path: engine-out
+          if-no-files-found: error
+
   host-checks:
     name: Host build and tests
     runs-on: ubuntu-24.04
@@ -211,7 +252,7 @@ jobs:
           set -e
           echo "$out"
           test "$rc" -eq 0
-          echo "$out" | grep -q '2\.7\.0'
+          echo "$out" | grep -q '2\.7\.'
 
       - name: Verify pak layout
         run: |
