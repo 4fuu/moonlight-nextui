@@ -62,9 +62,10 @@ static int expect_after(const char** cursor, const char* needle, const char* wha
 int main(int argc, char** argv)
 {
     if (argc < 2) {
-        fprintf(stderr, "usage: %s <fake-devserv-log>\n", argv[0]);
+        fprintf(stderr, "usage: %s <fake-devserv-log> [inprocess|system]\n", argv[0]);
         return 2;
     }
+    int inprocess = argc < 3 || strcmp(argv[2], "inprocess") == 0;
 
     ap_config config;
     memset(&config, 0, sizeof(config));
@@ -82,8 +83,10 @@ int main(int argc, char** argv)
     nextui_coop_init();
     usleep(700 * 1000);
 
-    CHECK(nextui_coop_overlay_owner() == NEXTUI_OVERLAY_APP,
-          "menu hosts the overlay in-process");
+    CHECK(nextui_coop_overlay_owner() == (inprocess ? NEXTUI_OVERLAY_APP
+                                                    : NEXTUI_OVERLAY_SYSTEM),
+          inprocess ? "menu hosts the overlay in-process"
+                    : "menu leaves HOME to the system");
 
     nextui_coop_overlay_suspend();
     usleep(200 * 1000);
@@ -99,8 +102,10 @@ int main(int argc, char** argv)
 
     nextui_coop_overlay_resume();
     usleep(300 * 1000);
-    CHECK(nextui_coop_overlay_owner() == NEXTUI_OVERLAY_APP,
-          "menu restores overlay ownership");
+    CHECK(nextui_coop_overlay_owner() == (inprocess ? NEXTUI_OVERLAY_APP
+                                                    : NEXTUI_OVERLAY_SYSTEM),
+          inprocess ? "menu restores overlay ownership"
+                    : "menu stays on the system fallback");
 
     nextui_coop_shutdown();
     ap_quit();
@@ -111,19 +116,26 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    printf("request order\n");
+    printf("request order (%s)\n", inprocess ? "in-process" : "system");
     const char* cursor = log;
-    expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at start");
-    expect_after(&cursor, "\"host\":true", "start hosts");
-    expect_after(&cursor, "\"op\":\"overlay.state\"", "overlay.state reported before yield");
-    expect_after(&cursor, "\"open\":false", "panel reported closed");
-    expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at suspend");
-    expect_after(&cursor, "\"host\":false", "streaming yields hosting");
+    if (inprocess) {
+        expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at start");
+        expect_after(&cursor, "\"host\":true", "start hosts");
+        expect_after(&cursor, "\"op\":\"overlay.state\"", "overlay.state reported before yield");
+        expect_after(&cursor, "\"open\":false", "panel reported closed");
+        expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at suspend");
+        expect_after(&cursor, "\"host\":false", "streaming yields hosting");
+    } else {
+        expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at start");
+        expect_after(&cursor, "\"host\":false", "session starts on the system fallback");
+    }
     expect_after(&cursor, "\"op\":\"sleep.inhibit\"", "stream requests sleep.inhibit");
     expect_after(&cursor, "\"reason\":\"streaming\"", "inhibit reason is streaming");
     expect_after(&cursor, "\"op\":\"sleep.release\"", "stream end releases the inhibit");
-    expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at resume");
-    expect_after(&cursor, "\"host\":true", "menu restores hosting");
+    if (inprocess) {
+        expect_after(&cursor, "\"op\":\"overlay.host\"", "overlay.host requested at resume");
+        expect_after(&cursor, "\"host\":true", "menu restores hosting");
+    }
 
     printf("%s\n", failures == 0 ? "coop transition tests passed" : "coop transition tests FAILED");
     return failures == 0 ? 0 : 1;
