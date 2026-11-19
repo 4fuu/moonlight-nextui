@@ -149,6 +149,22 @@ jobs:
             python3 scripts/nextui/check-libs.py dist/Moonlight.pak \
               --sysroot "$SYSROOT"
 
+      # NEEDED only proves the soname exists. Symbol versions are resolved at
+      # load time, and v0.3.3 shipped a libnsl without the GLIBC_2.17 symbols
+      # libwrap references. Run the real loader through qemu against the
+      # device sysroot so a version mismatch fails here, not on the handheld.
+      - name: Dry-run the engine through qemu-user
+        run: |
+          set -e
+          apt-get install -y --no-install-recommends qemu-user-static
+          PAK=dist/Moonlight.pak
+          out=$(QEMU_LD_PREFIX="$SYSROOT" \
+                LD_LIBRARY_PATH="$PAK/bin/libs" \
+                SDL_VIDEODRIVER=dummy \
+                qemu-aarch64-static "$PAK/bin/moonlight" --version 2>&1)
+          echo "$out"
+          echo "$out" | grep -q '2\.7\.0'
+
       - name: Verify pak layout
         run: |
           set -e
