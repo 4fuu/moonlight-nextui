@@ -254,8 +254,8 @@ resolves every `NEEDED` entry in `bin/moonlight` and `bin/libs/*` and fails on
 anything that is neither bundled nor on the explicit device-library list;
 `make-pak.sh` runs it before zipping and CI runs it again with the toolchain
 sysroot. CI also dry-runs `bin/moonlight --version` through
-`qemu-aarch64-static` with the sysroot, so symbol-version mismatches fail the
-build. v0.3.2 shipped without the second-level dependencies and could not
+`qemu-aarch64-static` with focal glibc and the sysroot runtime, so
+symbol-version mismatches fail the build. v0.3.2 shipped without the second-level dependencies and could not
 start `bin/moonlight` on device; v0.3.3 then shipped a libnsl without the
 `GLIBC_2.17` symbols `libwrap.so.0` references.
 

@@ -108,8 +108,9 @@ Source packages for the restored files (Ubuntu focal arm64, release pocket):
 `scripts/nextui/check-libs.py` resolves `NEEDED` for `bin/moonlight` and every
 bundled library; `make-pak.sh` and CI fail if a soname is neither bundled nor
 part of the explicit device contract (`BASE_ALLOW` in that script). CI then
-runs the real loader through `qemu-aarch64-static` against the toolchain
-sysroot (`bin/moonlight --version`), which also resolves symbol versions: a
+runs the real loader through `qemu-aarch64-static` with focal glibc 2.31 (the
+generation the engine targets) and the toolchain sysroot for the rest of the
+runtime (`bin/moonlight --version`). That also resolves symbol versions: a
 library with the right soname but the wrong versioned symbols still fails.
 
 | Library | Project | License |
