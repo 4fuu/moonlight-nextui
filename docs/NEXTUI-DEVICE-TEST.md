@@ -22,12 +22,17 @@ Expected:
   `=== Moonlight.pak ... platform=tg5040`.
 - The log prints `path=` containing `Moonlight.pak/shim` and `bin/libs`.
 - `$SHARED_USERDATA_PATH/moonlight/` exists.
+- `bin/libs` has 43 libraries and `./bin/moonlight --version` (run from the
+  pak directory with `LD_LIBRARY_PATH=$PWD/bin/libs`) does not report a
+  missing shared library. v0.3.2 failed here on `libpulsecommon-13.99.so`.
 
 Commands:
 
 ```sh
 adb shell 'tail -n 40 /mnt/SDCARD/.userdata/tg5040/logs/Moonlight.txt'
 adb shell 'ls -l /mnt/SDCARD/.userdata/shared/moonlight /mnt/SDCARD/.userdata/shared/moonlight/keys'
+adb shell 'ls /mnt/SDCARD/Tools/tg5040/Moonlight.pak/bin/libs | wc -l'
+adb shell 'cd /mnt/SDCARD/Tools/tg5040/Moonlight.pak && LD_LIBRARY_PATH=$PWD/bin/libs ./bin/moonlight --version'
 ```
 
 ## 2. C3 session
@@ -48,7 +53,7 @@ but app-action/system-feedback have no session to route to.
 adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf app-action overlay'
 ```
 
-Expected in v0.3.2: `"handled_by_system":true` and `"overlay_host":false`.
+Expected in v0.3.3: `"handled_by_system":true` and `"overlay_host":false`.
 Pressing HOME opens NextUI's system panel; the app log shows
 `nextui: init overlay_mode=system-fallback` and `nextui: overlay.host(0) -> ok`.
 The app process must not draw a panel.
@@ -176,7 +181,7 @@ nextui: overlay.state(0) ok
 
 If it stalls, capture the full `Moonlight.txt`; a 2 s open watchdog will log
 `panel did not open ... yielding hosting` and return HOME to the system. The
-v0.3.2 UI thread no longer sends `overlay.state`, so the old
+v0.3.3 UI thread no longer sends `overlay.state`, so the old
 `UIOverlay_open -> focus_changed -> nextui_app_overlay_set_open` blocking path
 is gone from this build; the SDK request lock fix is still required for the
 opt-in path to be considered reliable.
