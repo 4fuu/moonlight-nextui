@@ -107,7 +107,8 @@ jobs:
       - name: Install packaging tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends zip file python3 ca-certificates
+          apt-get install -y --no-install-recommends \
+            zip file python3 ca-certificates qemu-user-static
 
       - name: Show toolchain
         run: |
@@ -156,7 +157,6 @@ jobs:
       - name: Dry-run the engine through qemu-user
         run: |
           set -e
-          apt-get install -y --no-install-recommends qemu-user-static
           PAK=dist/Moonlight.pak
           out=$(QEMU_LD_PREFIX="$SYSROOT" \
                 LD_LIBRARY_PATH="$PAK/bin/libs" \
