@@ -20,7 +20,7 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
 | Full-fidelity overlay renderer vendored and building | done, S1/S2 |
-| HOME panel | **system fallback by default** (v0.3.1) |
+| HOME panel | **system fallback by default** (v0.3.2) |
 | In-process full-fidelity panel | opt-in, `MOONLIGHT_INPROCESS_OVERLAY=1` |
 | Volume/brightness HUD cooperation | done, M3 (system HUD by default) |
 | Sleep/wake handshake + stream inhibit | done, M4 |
@@ -28,7 +28,7 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | Streaming-time HOME ownership (dynamic) | done, M6 |
 | Device acceptance (handshake, panel, HUD) | **pending owner test** |
 
-The wrapper now links `nextui-app-sdk` at `4069f16` and implements the
+The wrapper now links `nextui-app-sdk` at `27e5597` and implements the
 cooperation contract. A missing devserv is not fatal: the app logs the failure,
 reads HOME from `KEY_HOMEPAGE` itself, and otherwise behaves like an
 uncooperative app.
@@ -69,7 +69,7 @@ subsystems into the app process.
 `pak.json` declares `"capabilities": ["overlay"]` — the permission, not a
 lifetime claim. The effective host is runtime session state (contract §7.9).
 
-**Default (v0.3.1): the app yields hosting for the whole session.** It sends
+**Default (v0.3.2): the app yields hosting for the whole session.** It sends
 `overlay.host:false` at connect, so HOME and the HUD are NextUI's system
 panel/keymon. That panel is the full-fidelity reference, and it is the
 responsive path: the app process does not render, does not read pad input for
@@ -77,8 +77,9 @@ a panel, and cannot hold HOME. Sleep inhibit, battery/status, the event channel
 and streaming all stay active.
 
 **Opt-in: `MOONLIGHT_INPROCESS_OVERLAY=1`** restores the app-hosted panel for
-development. It is not the shipping default while the v0.3.0 device freeze is
-being diagnosed. In that mode:
+development. It is not the shipping default until the owner's device run
+confirms it. The SDK request/event lock split (`27e5597`) removes the client
+side of the v0.3.0 deadlock; in that mode:
 
 - menu hosts the panel in-process (`overlay.host:true`, HUD app for
   volume/brightness/colortemp);
@@ -86,6 +87,11 @@ being diagnosed. In that mode:
 - the SDK event pushes an `SDL_USEREVENT` to wake an idle widget loop, and the
   `overlay.state` report is queued to the SDK thread instead of doing socket
   I/O on the UI thread;
+- while the panel owns the frame, Apostrophe's host bridge stops calling
+  `coop_poll()`, so the panel input (including the HOME close) is driven from
+  the draw path; without that the panel would draw but ignore every button;
+- a failed `overlay.state` report is re-queued (up to three times) so a
+  timeout cannot leave devserv believing the panel is still open;
 - a 2 s watchdog yields hosting if the panel never opens.
 
 Diagnostics in `Moonlight.txt` for the opt-in path:
@@ -105,6 +111,12 @@ nextui: panel draw #1 begin
 nextui: panel draw #1 end
 nextui: reporting overlay.state(1)
 nextui: overlay.state(1) ok
+nextui: overlay.home event
+nextui: HOME consumed by main loop
+nextui: panel close begin
+nextui: panel close returned open=0
+nextui: reporting overlay.state(0)
+nextui: overlay.state(0) ok
 ```
 
 The step that is missing is where the device stalls. The system-fallback build

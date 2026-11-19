@@ -53,6 +53,9 @@ void nextui_coop_tick(void);
 bool nextui_coop_streaming(void);
 nextui_overlay_owner nextui_coop_overlay_owner(void);
 
+/* True while the app-hosted panel is open. False in the system fallback. */
+bool nextui_coop_overlay_open(void);
+
 /* True when the SDK asked the app to leave (session.ended, or the overlay's
  * Exit action). ml_stream() terminates the engine; main() leaves the loop. */
 bool nextui_coop_quit_requested(void);
