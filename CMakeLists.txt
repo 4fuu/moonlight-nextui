@@ -263,7 +263,15 @@ if(NEXTUI_BUILD_TESTS)
                              $<TARGET_FILE:test_coop>
                              $<TARGET_FILE:fake_devserv>
                              ${NEXTUI_TEST_SD_ROOT}-coop
-                             ${CMAKE_CURRENT_BINARY_DIR}/coop-test.log)
+                             ${CMAKE_CURRENT_BINARY_DIR}/coop-test.log
+                             inprocess)
+            add_test(NAME coop-system-fallback
+                     COMMAND sh ${CMAKE_CURRENT_SOURCE_DIR}/scripts/nextui/test-coop.sh
+                             $<TARGET_FILE:test_coop>
+                             $<TARGET_FILE:fake_devserv>
+                             ${NEXTUI_TEST_SD_ROOT}-coop-system
+                             ${CMAKE_CURRENT_BINARY_DIR}/coop-system-test.log
+                             system)
         endif()
     endif()
 endif()

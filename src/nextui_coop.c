@@ -1,10 +1,13 @@
 /*
  * NextUI cooperation layer for Moonlight (M1-M6).
  *
- * Menu: the wrapper hosts NextUI's own overlay (dynamic overlay.host true).
- * Streaming: the engine owns fb0, so hosting is yielded and the system
- * fallback draws HOME/HUD; the SDK stays subscribed for sleep inhibit,
- * status and session end.
+ * Default mode is the system fallback: the wrapper yields overlay.host for the
+ * whole session, so HOME/HUD are NextUI's and no renderer runs in this
+ * process. The in-process host (NextUI's own panel) is opt-in with
+ * MOONLIGHT_INPROCESS_OVERLAY=1 while it is validated on device.
+ *
+ * Streaming always yields hosting (the engine owns fb0); the SDK stays
+ * subscribed for sleep inhibit, status and session end.
  *
  * The SDK's polling API must be owned by one thread; this module runs it in a
  * dedicated pthread and publishes UI-relevant events to the main thread as
@@ -41,6 +44,7 @@
 #define STREAM_INHIBIT_MS 300000
 #define STREAM_INHIBIT_REFRESH_MS 60000
 #define HUD_VISIBLE_MS 1600
+#define OVERLAY_OPEN_TIMEOUT_MS 2000
 
 static NextuiApp* s_app;
 static pthread_t s_thread;
@@ -50,9 +54,15 @@ static atomic_int s_streaming;
 static atomic_int s_quit;
 static atomic_int s_home_pending;
 static atomic_int s_connected;
+/* -1: nothing pending; 0/1: overlay.state to report from the SDK thread. */
+static atomic_int s_overlay_state_pending;
 
 static ApostropheOverlayHost* s_overlay;
-static int s_hosting; /* effective overlay.host we last requested */
+static int s_hosting;    /* effective overlay.host we last requested */
+static int s_inprocess;  /* opt-in: host NextUI's panel in this process */
+static unsigned long long s_home_at;
+static unsigned s_draw_count;
+static int s_status_logged;
 
 static pthread_mutex_t s_status_lock = PTHREAD_MUTEX_INITIALIZER;
 static NextuiStatus s_status;
@@ -218,12 +228,18 @@ static int overlay_exit_to_desktop(void* user)
 static void overlay_focus_changed(void* user, int open)
 {
     (void)user;
-    if (s_app && nextui_app_is_connected(s_app))
-        nextui_app_overlay_set_open(s_app, open ? 1 : 0);
+
+    /* Never do socket I/O on the UI thread from the open/close transition: a
+     * slow devserv used to stall HOME for the request timeout. The SDK thread
+     * reports the state right after its next wait. */
+    atomic_store(&s_overlay_state_pending, open ? 1 : 0);
+    ap_log("nextui: overlay %s (state queued)", open ? "opened" : "closed");
+
     if (open) {
         pthread_mutex_lock(&s_feedback_lock);
         s_feedback_active = 0;
         pthread_mutex_unlock(&s_feedback_lock);
+        s_home_at = 0;
     }
 }
 
@@ -327,6 +343,7 @@ static int overlay_create(void)
         log_line("overlay renderer unavailable; yielding HOME to the system");
         return 0;
     }
+    log_line("overlay renderer created");
     return 1;
 }
 
@@ -346,10 +363,13 @@ static void overlay_close_if_open(void)
 static void overlay_toggle(void)
 {
     if (!overlay_create()) return;
-    if (ApostropheOverlayHost_isOpen(s_overlay))
+    if (ApostropheOverlayHost_isOpen(s_overlay)) {
+        ap_log("nextui: panel close requested");
         ApostropheOverlayHost_close(s_overlay);
-    else
+    } else {
+        ap_log("nextui: panel open requested");
         ApostropheOverlayHost_open(s_overlay);
+    }
 }
 
 static int coop_poll(void* user)
@@ -360,6 +380,8 @@ static int coop_poll(void* user)
      * manifest still makes us the adapted app, so read KEY_HOMEPAGE ourselves
      * rather than leaving HOME dead. */
     if (atomic_exchange(&s_home_pending, 0)) {
+        ap_log("nextui: HOME consumed by main loop");
+        s_home_at = now_ms();
         overlay_toggle();
     } else if (!atomic_load(&s_connected)) {
         int down = PLAT_getHomeKeyPressed();
@@ -373,13 +395,31 @@ static int coop_poll(void* user)
         return 1;
     }
 
+    /* A panel that never becomes open would leave HOME routed to a process
+     * that cannot draw. Yield to the system for the rest of the session. */
+    if (s_inprocess && s_home_at && now_ms() - s_home_at > OVERLAY_OPEN_TIMEOUT_MS) {
+        s_home_at = 0;
+        ap_log("nextui: panel did not open in %d ms; yielding hosting",
+               OVERLAY_OPEN_TIMEOUT_MS);
+        if (s_app && nextui_app_is_connected(s_app))
+            (void)nextui_app_overlay_set_host(s_app, 0);
+        ap_host_detach();
+        overlay_destroy();
+        s_inprocess = 0;
+        s_hosting = 0;
+    }
+
     return atomic_load(&s_quit) ? 1 : 0;
 }
 
 static void coop_draw(void* user, SDL_Renderer* renderer)
 {
     (void)user;
-    if (s_overlay) ApostropheOverlayHost_draw(s_overlay, renderer);
+    if (s_overlay) {
+        ApostropheOverlayHost_draw(s_overlay, renderer);
+        if (ApostropheOverlayHost_isOpen(s_overlay) && (s_draw_count++ % 60) == 0)
+            ap_log("nextui: panel draw #%u", s_draw_count);
+    }
     if (!s_overlay || !ApostropheOverlayHost_isOpen(s_overlay))
         hud_draw(renderer);
 }
@@ -406,7 +446,20 @@ static void on_event(NextuiApp* app, const NextuiAppEvent* event, void* user)
 
     switch (event->type) {
     case NEXTUI_APP_EVENT_OVERLAY_HOME:
+        ap_log("nextui: overlay.home event");
+        if (!s_inprocess) {
+            ap_log("nextui: overlay.home ignored (system fallback)");
+            break;
+        }
         atomic_store(&s_home_pending, 1);
+        {
+            /* The widget loop may be idle in SDL_WaitEventTimeout; the SDK
+             * event is not an SDL event, so wake it explicitly. */
+            SDL_Event wake;
+            SDL_memset(&wake, 0, sizeof(wake));
+            wake.type = SDL_USEREVENT;
+            SDL_PushEvent(&wake);
+        }
         break;
     case NEXTUI_APP_EVENT_STATUS_SNAPSHOT:
     case NEXTUI_APP_EVENT_STATUS_CHANGED:
@@ -445,6 +498,7 @@ static void on_sleep(NextuiApp* app, const NextuiSleepPrepare* prepare,
     (void)prepare;
     (void)user;
 
+    ap_log("nextui: sleep.prepare (%s)", prepare->reason);
     if (atomic_load(&s_streaming)) {
         /* The engine must survive an idle sleep; an explicit power press is
          * still delivered, and this prepare is deferred for five minutes. */
@@ -478,6 +532,17 @@ static void* sdk_thread(void* arg)
         } else if (!atomic_load(&s_connected) && nextui_app_is_connected(s_app)) {
             atomic_store(&s_connected, 1);
         }
+
+        int overlay_state = atomic_exchange(&s_overlay_state_pending, -1);
+        if (overlay_state >= 0 && nextui_app_is_connected(s_app)) {
+            NextuiAppStatus st =
+                nextui_app_overlay_set_open(s_app, overlay_state);
+            if (st != NEXTUI_APP_OK)
+                ap_log("nextui: overlay.state(%d) failed: %s", overlay_state,
+                       nextui_app_status_string(st));
+            else
+                ap_log("nextui: overlay.state(%d) ok", overlay_state);
+        }
     }
     return NULL;
 }
@@ -492,19 +557,34 @@ void nextui_coop_init(void)
     atomic_store(&s_home_pending, 0);
     atomic_store(&s_connected, 0);
     s_have_status = 0;
+    s_status_logged = 0;
+    s_draw_count = 0;
+    s_home_at = 0;
+    s_hosting = 0;
+    atomic_store(&s_overlay_state_pending, -1);
     memset(&s_status, 0, sizeof(s_status));
 
-    PAD_init();
+    const char* mode = getenv("MOONLIGHT_INPROCESS_OVERLAY");
+    s_inprocess = mode && (strcmp(mode, "1") == 0 || strcmp(mode, "true") == 0);
+    ap_log("nextui: init overlay_mode=%s", s_inprocess ? "in-process" : "system-fallback");
 
-    /* The overlay renderer needs the GFX resources; create it before the host
-     * backend can be called from a widget frame. */
-    overlay_create();
-
-    ap_host_attach(&s_backend, on_host_event, NULL);
+    if (s_inprocess) {
+        PAD_init();
+        /* The overlay renderer needs the GFX resources; create it before the
+         * host backend can be called from a widget frame. */
+        if (!overlay_create()) {
+            s_inprocess = 0;
+            ap_log("nextui: panel unavailable; using the system fallback");
+        } else {
+            ap_host_attach(&s_backend, on_host_event, NULL);
+        }
+    } else {
+        ap_log("nextui: in-process panel disabled; HOME/HUD use the system");
+    }
 
     NextuiAppConfig config;
     memset(&config, 0, sizeof(config));
-    config.client_name = "moonlight/0.2.0";
+    config.client_name = "moonlight/0.3.1";
     config.connect_timeout_ms = 1500;
     config.io_timeout_ms = 1500;
     config.log = log_sdk;
@@ -519,29 +599,47 @@ void nextui_coop_init(void)
     memset(&info, 0, sizeof(info));
     NextuiAppStatus status = nextui_app_connect(s_app, &info);
     if (status != NEXTUI_APP_OK) {
-        log_line("devserv connect failed (%s); HOME falls back to the system",
-                 nextui_app_status_string(status));
+        log_line("devserv connect failed (%s)", nextui_app_status_string(status));
+        if (!s_inprocess) {
+            /* No devserv means no session routing and no system fallback. The
+             * manifest still says adapted, so keep HOME usable by reading the
+             * key ourselves and drawing the panel. */
+            log_line("no devserv; enabling in-process fallback for HOME");
+            s_inprocess = 1;
+            PAD_init();
+            if (overlay_create())
+                ap_host_attach(&s_backend, on_host_event, NULL);
+            else
+                s_inprocess = 0;
+        }
         return;
     }
 
     if (!info.session_active) {
         log_line("no active session; cooperation idle");
     }
-    if (info.overlay_host_declared && !info.overlay_host) {
+    if (s_inprocess && info.overlay_host_declared && !info.overlay_host) {
         log_line("session started with overlay host off; restoring");
     }
 
     nextui_app_set_event_callback(s_app, on_event, NULL);
     nextui_app_set_sleep_handler(s_app, on_sleep, NULL);
 
-    /* Mute keeps the system HUD (the app has no mute icon in its own HUD). */
-    unsigned app_hud = NEXTUI_APP_HUD_VOLUME | NEXTUI_APP_HUD_BRIGHTNESS |
-                       NEXTUI_APP_HUD_COLORTEMP;
-    (void)nextui_app_hud_set_policy(s_app, NEXTUI_APP_HUD_ALL, NEXTUI_APP_HUD_SYSTEM);
-    (void)nextui_app_hud_set_policy(s_app, app_hud, NEXTUI_APP_HUD_APP);
+    if (s_inprocess) {
+        /* Mute keeps the system HUD (the app has no mute icon in its HUD). */
+        unsigned app_hud = NEXTUI_APP_HUD_VOLUME | NEXTUI_APP_HUD_BRIGHTNESS |
+                           NEXTUI_APP_HUD_COLORTEMP;
+        (void)nextui_app_hud_set_policy(s_app, NEXTUI_APP_HUD_ALL, NEXTUI_APP_HUD_SYSTEM);
+        (void)nextui_app_hud_set_policy(s_app, app_hud, NEXTUI_APP_HUD_APP);
 
-    s_hosting = 1;
-    (void)nextui_app_overlay_set_host(s_app, 1);
+        NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 1);
+        s_hosting = st == NEXTUI_APP_OK;
+        ap_log("nextui: overlay.host(1) -> %s", nextui_app_status_string(st));
+    } else {
+        (void)nextui_app_hud_set_policy(s_app, NEXTUI_APP_HUD_ALL, NEXTUI_APP_HUD_SYSTEM);
+        NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 0);
+        ap_log("nextui: overlay.host(0) -> %s", nextui_app_status_string(st));
+    }
 
     status_refresh();
 
@@ -579,6 +677,11 @@ void nextui_coop_shutdown(void)
 
 void nextui_coop_overlay_suspend(void)
 {
+    if (!s_inprocess) {
+        ap_log("nextui: overlay suspend (system fallback; nothing to yield)");
+        return;
+    }
+
     overlay_close_if_open();
     hud_release();
     ap_host_detach();
@@ -598,6 +701,10 @@ void nextui_coop_overlay_suspend(void)
 
 void nextui_coop_overlay_resume(void)
 {
+    if (!s_inprocess) {
+        ap_log("nextui: overlay resume (system fallback; nothing to restore)");
+        return;
+    }
     if (!s_app) return;
 
     if (overlay_create())
@@ -657,6 +764,7 @@ bool nextui_coop_streaming(void)
 
 nextui_overlay_owner nextui_coop_overlay_owner(void)
 {
+    if (!s_inprocess) return NEXTUI_OVERLAY_SYSTEM;
     if (atomic_load(&s_streaming)) return NEXTUI_OVERLAY_SYSTEM;
     if (!s_overlay || !s_hosting) return NEXTUI_OVERLAY_SYSTEM;
     return NEXTUI_OVERLAY_APP;
@@ -670,8 +778,8 @@ bool nextui_coop_quit_requested(void)
 const char* nextui_coop_state_string(void)
 {
     static char buf[96];
-    snprintf(buf, sizeof(buf), "connected=%d streaming=%d hosting=%d overlay=%d",
-             atomic_load(&s_connected), atomic_load(&s_streaming), s_hosting,
-             s_overlay != NULL);
+    snprintf(buf, sizeof(buf), "connected=%d streaming=%d mode=%s hosting=%d overlay=%d",
+             atomic_load(&s_connected), atomic_load(&s_streaming),
+             s_inprocess ? "in-process" : "system", s_hosting, s_overlay != NULL);
     return buf;
 }

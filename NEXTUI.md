@@ -20,8 +20,9 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
 | Full-fidelity overlay renderer vendored and building | done, S1/S2 |
-| In-process HOME overlay in the menu | done, M2 |
-| Volume/brightness HUD cooperation | done, M3 |
+| HOME panel | **system fallback by default** (v0.3.1) |
+| In-process full-fidelity panel | opt-in, `MOONLIGHT_INPROCESS_OVERLAY=1` |
+| Volume/brightness HUD cooperation | done, M3 (system HUD by default) |
 | Sleep/wake handshake + stream inhibit | done, M4 |
 | Battery/status rows from the SDK | done, M5 |
 | Streaming-time HOME ownership (dynamic) | done, M6 |
@@ -63,24 +64,49 @@ link with `-ffunction-sections -Wl,--gc-sections`: only the GFX/PAD/CFG path the
 overlay reaches is kept, so the pak does not pull NextUI's power, video or LED
 subsystems into the app process.
 
-## Dynamic overlay ownership
+## HOME panel and overlay ownership
 
-`pak.json` declares `"capabilities": ["overlay"]`. That declaration is the
-static permission; the effective host is runtime session state
-(contract §7.9). Moonlight has two states:
+`pak.json` declares `"capabilities": ["overlay"]` — the permission, not a
+lifetime claim. The effective host is runtime session state (contract §7.9).
 
-- **Menu / pair / servers / settings** — the wrapper owns the display and hosts
-  the panel in-process (`NEXTUI_OVERLAY_APP`, `overlay.host:true`,
-  `hud.policy:app` for volume/brightness/colortemp).
-- **Streaming** — the engine is a separate process owning fb0; the wrapper's SDL
-  is torn down. `nextui_coop_overlay_suspend()` closes the panel, reports
-  `overlay.state open:false`, sends `overlay.host:false`, then `ap_quit()`.
-  From the acknowledgement onward HOME/HUD are the system fallback.
+**Default (v0.3.1): the app yields hosting for the whole session.** It sends
+`overlay.host:false` at connect, so HOME and the HUD are NextUI's system
+panel/keymon. That panel is the full-fidelity reference, and it is the
+responsive path: the app process does not render, does not read pad input for
+a panel, and cannot hold HOME. Sleep inhibit, battery/status, the event channel
+and streaming all stay active.
 
-`src/nextui_coop.c` performs the ordered transition from §7.9.3 and
-`tests/test_coop.c` asserts the request order against the SDK's fake devserv.
-The HUD uses NextUI's own `GFX_blitHardwareIndicator`; mute stays with the
-system because the app has no mute icon in its HUD.
+**Opt-in: `MOONLIGHT_INPROCESS_OVERLAY=1`** restores the app-hosted panel for
+development. It is not the shipping default while the v0.3.0 device freeze is
+being diagnosed. In that mode:
+
+- menu hosts the panel in-process (`overlay.host:true`, HUD app for
+  volume/brightness/colortemp);
+- streaming yields it, closes the panel and tears down SDL in the §7.9.3 order;
+- the SDK event pushes an `SDL_USEREVENT` to wake an idle widget loop, and the
+  `overlay.state` report is queued to the SDK thread instead of doing socket
+  I/O on the UI thread;
+- a 2 s watchdog yields hosting if the panel never opens.
+
+Diagnostics in `Moonlight.txt` for the opt-in path:
+
+```text
+nextui: init overlay_mode=in-process
+nextui: overlay renderer created
+nextui: overlay.host(1) -> ok
+nextui: overlay.home event
+nextui: HOME consumed by main loop
+nextui: panel open requested
+nextui: overlay opened (state queued)
+nextui: panel draw #1
+nextui: overlay.state(1) ok
+```
+
+The step that is missing is where the device stalls. The system-fallback build
+logs `overlay_mode=system-fallback` and `overlay.host(0) -> ok` instead.
+
+`tests/test_coop.c` asserts both modes' request order against the SDK fake
+devserv (`coop-transitions` and `coop-system-fallback`).
 
 `src/nextui_coop.c` already answers the ownership question in code
 (`nextui_coop_overlay_owner()`), so M6 has one place to wire the protocol.
