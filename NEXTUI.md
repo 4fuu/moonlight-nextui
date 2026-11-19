@@ -93,17 +93,35 @@ Diagnostics in `Moonlight.txt` for the opt-in path:
 ```text
 nextui: init overlay_mode=in-process
 nextui: overlay renderer created
+nextui: requesting overlay.host(1) (in-process)
 nextui: overlay.host(1) -> ok
+nextui: connected: session=... hosting=1 declared_host=1
 nextui: overlay.home event
 nextui: HOME consumed by main loop
-nextui: panel open requested
+nextui: panel open begin
 nextui: overlay opened (state queued)
-nextui: panel draw #1
+nextui: panel open returned open=1
+nextui: panel draw #1 begin
+nextui: panel draw #1 end
+nextui: reporting overlay.state(1)
 nextui: overlay.state(1) ok
 ```
 
 The step that is missing is where the device stalls. The system-fallback build
-logs `overlay_mode=system-fallback` and `overlay.host(0) -> ok` instead.
+logs `overlay_mode=system-fallback`, `requesting overlay.host(0)`, `overlay.host(0) -> ok`
+and `hosting=0` instead.
+
+## Power key ownership
+
+The pak disables Apostrophe's built-in power handler
+(`ap_set_power_handler(false)`) on every `ap_init()`. That fallback reads
+`/dev/input/event1` itself and runs `suspend` on a short press or
+`touch /tmp/poweroff; exit(0)` on a long press, bypassing NextUI's
+`sleep.request` handshake and fighting keymon. In NextUI mode the power key
+belongs to keymon: a short press sends `sleep.prepare`, the app acks or inhibits
+it, and `wake.done` follows. While streaming, the app keeps a
+`sleep.inhibit("streaming", 300000)` lease; the pak never calls `suspend` or
+`poweroff` itself. See `docs/NEXTUI-DEVICE-TEST.md` section 9.
 
 `tests/test_coop.c` asserts both modes' request order against the SDK fake
 devserv (`coop-transitions` and `coop-system-fallback`).

@@ -149,17 +149,26 @@ sequence below; the first missing line is where it stalls:
 ```text
 nextui: init overlay_mode=in-process
 nextui: overlay renderer created
+nextui: requesting overlay.host(1) (in-process)
 nextui: overlay.host(1) -> ok
+nextui: connected: session=... hosting=1 declared_host=1
 nextui: overlay.home event
 nextui: HOME consumed by main loop
-nextui: panel open requested
+nextui: panel open begin
 nextui: overlay opened (state queued)
-nextui: panel draw #1
+nextui: panel open returned open=1
+nextui: panel draw #1 begin
+nextui: panel draw #1 end
+nextui: reporting overlay.state(1)
 nextui: overlay.state(1) ok
 ```
 
 If it stalls, capture the full `Moonlight.txt`; a 2 s open watchdog will log
-`panel did not open ... yielding hosting` and return HOME to the system.
+`panel did not open ... yielding hosting` and return HOME to the system. The
+v0.3.1 UI thread no longer sends `overlay.state`, so the old
+`UIOverlay_open -> focus_changed -> nextui_app_overlay_set_open` blocking path
+is gone from this build; the SDK request lock fix is still required for the
+opt-in path to be considered reliable.
 
 ## 8. HUD cooperation
 
@@ -174,6 +183,11 @@ If it stalls, capture the full `Moonlight.txt`; a 2 s open watchdog will log
 
 ## 9. Sleep / wake handshake
 
+0. **Power ownership:** the log must contain
+   `power: Apostrophe handler disabled; keymon owns KEY_POWER`. A short press
+   must **not** print `Power: short press → suspend`, and a long press must not
+   exit the app or create `/tmp/poweroff`; keymon drives the handshake. If the
+   old Apostrophe lines appear, the pak is running an older build.
 1. **Menu, idle:** let the device auto-sleep. It should suspend normally (the
    app acks `sleep.prepare` with nothing to save).
 2. **Streaming, idle:** wait past the idle threshold. The stream must not

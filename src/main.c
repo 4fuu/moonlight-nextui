@@ -51,6 +51,14 @@ int main(int argc, char *argv[])
 
     ap_log("moonlight-pak: startup platform=%s", AP_PLATFORM_NAME);
 
+#if AP_PLATFORM_IS_DEVICE
+    /* NextUI's keymon owns KEY_POWER and drives sleep.request through the
+     * cooperation handshake. Apostrophe's fallback handler would run suspend
+     * or poweroff directly, bypassing that handshake and fighting keymon. */
+    ap_set_power_handler(false);
+    ap_log("power: Apostrophe handler disabled; keymon owns KEY_POWER");
+#endif
+
     nextui_coop_init();
 
     run_app();

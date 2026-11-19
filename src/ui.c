@@ -244,6 +244,12 @@ void stream_flow(void)
         acfg.cpu_speed    = AP_CPU_SPEED_MENU;
         ap_init(&acfg);
 
+#if AP_PLATFORM_IS_DEVICE
+        /* ap_init() restarted Apostrophe's power handler; keymon owns the key
+         * and the sleep handshake for the whole pak lifetime. */
+        ap_set_power_handler(false);
+#endif
+
         /* Streaming -> menu: rebuild the overlay against the new renderer and
          * restore hosting; before the acknowledgement HOME stays with the
          * system panel. */

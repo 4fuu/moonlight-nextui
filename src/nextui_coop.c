@@ -375,11 +375,15 @@ static void overlay_toggle(void)
 
     if (!overlay_create()) return;
     if (ApostropheOverlayHost_isOpen(s_overlay)) {
-        ap_log("nextui: panel close requested");
+        ap_log("nextui: panel close begin");
         ApostropheOverlayHost_close(s_overlay);
+        ap_log("nextui: panel close returned open=%d",
+               ApostropheOverlayHost_isOpen(s_overlay));
     } else {
-        ap_log("nextui: panel open requested");
+        ap_log("nextui: panel open begin");
         ApostropheOverlayHost_open(s_overlay);
+        ap_log("nextui: panel open returned open=%d",
+               ApostropheOverlayHost_isOpen(s_overlay));
     }
 }
 
@@ -396,8 +400,10 @@ static int coop_poll(void* user)
         overlay_toggle();
     } else if (!atomic_load(&s_connected)) {
         int down = PLAT_getHomeKeyPressed();
-        if (down && !home_key_was_down)
+        if (down && !home_key_was_down) {
+            ap_log("nextui: HOME key edge consumed by main loop");
             overlay_toggle();
+        }
         home_key_was_down = down;
     }
 
@@ -426,9 +432,18 @@ static void coop_draw(void* user, SDL_Renderer* renderer)
 {
     (void)user;
     if (s_overlay) {
-        ApostropheOverlayHost_draw(s_overlay, renderer);
-        if (ApostropheOverlayHost_isOpen(s_overlay) && (s_draw_count++ % 60) == 0)
-            ap_log("nextui: panel draw #%u", s_draw_count);
+        if (ApostropheOverlayHost_isOpen(s_overlay)) {
+            unsigned n = ++s_draw_count;
+            if (n <= 5)
+                ap_log("nextui: panel draw #%u begin", n);
+            ApostropheOverlayHost_draw(s_overlay, renderer);
+            if (n <= 5)
+                ap_log("nextui: panel draw #%u end", n);
+            else if (n % 60 == 0)
+                ap_log("nextui: panel draw #%u", n);
+        } else {
+            ApostropheOverlayHost_draw(s_overlay, renderer);
+        }
     }
     if (!s_overlay || !ApostropheOverlayHost_isOpen(s_overlay))
         hud_draw(renderer);
@@ -545,6 +560,7 @@ static void* sdk_thread(void* arg)
 
         int overlay_state = atomic_exchange(&s_overlay_state_pending, -1);
         if (overlay_state >= 0 && nextui_app_is_connected(s_app)) {
+            ap_log("nextui: reporting overlay.state(%d)", overlay_state);
             NextuiAppStatus st =
                 nextui_app_overlay_set_open(s_app, overlay_state);
             if (st != NEXTUI_APP_OK)
@@ -555,6 +571,7 @@ static void* sdk_thread(void* arg)
         }
 
         if (atomic_exchange(&s_yield_pending, 0) && nextui_app_is_connected(s_app)) {
+            ap_log("nextui: requesting overlay.host(0) after a failed open");
             NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 0);
             if (st != NEXTUI_APP_OK)
                 ap_log("nextui: overlay.host(0) failed: %s",
@@ -652,11 +669,13 @@ void nextui_coop_init(void)
         (void)nextui_app_hud_set_policy(s_app, NEXTUI_APP_HUD_ALL, NEXTUI_APP_HUD_SYSTEM);
         (void)nextui_app_hud_set_policy(s_app, app_hud, NEXTUI_APP_HUD_APP);
 
+        ap_log("nextui: requesting overlay.host(1) (in-process)");
         NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 1);
         s_hosting = st == NEXTUI_APP_OK;
         ap_log("nextui: overlay.host(1) -> %s", nextui_app_status_string(st));
     } else {
         (void)nextui_app_hud_set_policy(s_app, NEXTUI_APP_HUD_ALL, NEXTUI_APP_HUD_SYSTEM);
+        ap_log("nextui: requesting overlay.host(0) (system fallback)");
         NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 0);
         ap_log("nextui: overlay.host(0) -> %s", nextui_app_status_string(st));
     }
