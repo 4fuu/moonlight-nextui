@@ -182,11 +182,15 @@ jobs:
         run: |
           set -e
           PAK=dist/Moonlight.pak
+          set +e
           out=$(QEMU_LD_PREFIX="$SYSROOT" \
                 LD_LIBRARY_PATH="$PAK/bin/libs" \
                 SDL_VIDEODRIVER=dummy \
                 "$RUNNER_TEMP/qemu-aarch64-static" "$PAK/bin/moonlight" --version 2>&1)
+          rc=$?
+          set -e
           echo "$out"
+          test "$rc" -eq 0
           echo "$out" | grep -q '2\.7\.0'
 
       - name: Verify pak layout
