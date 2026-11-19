@@ -1,13 +1,14 @@
 {
   "id": "4fuu.moonlight",
   "name": "Moonlight",
-  "version": "v0.3.1",
+  "version": "v0.3.2",
   "type": "TOOL",
   "description": "Stream games from your PC with native-resolution support. Rebuilt Apostrophe wrapper with the bundled spruce moonlight-embedded engine; pair, manage servers, and launch streams from a native NextUI interface.",
   "author": "4fuu (wrapper originally by richieszemeredi)",
   "repo_url": "https://github.com/4fuu/moonlight-nextui",
   "release_filename": "Moonlight.pakz",
   "changelog": {
+    "v0.3.2": "Cooperation client updated to nextui-app-sdk 27e5597 (request/event lock split; a slow or blocked request can no longer stop the event stream). The in-process HOME panel now keeps polling its own input while it owns the frame, so HOME opens and closes it and the buttons work; previously the bridge stopped calling the host poll once the panel was up. overlay.state is re-queued after a timeout so devserv cannot keep a stale open/closed view.",
     "v0.3.1": "HOME is stable again: the app yields overlay hosting by default, so NextUI's system panel handles HOME/HUD while sleep inhibit, battery/status and the SDK event channel stay active. In-process hosting is opt-in (MOONLIGHT_INPROCESS_OVERLAY=1) with step-by-step logs and a 2 s open watchdog; the overlay state report no longer blocks the UI thread and the SDK event wakes an idle widget loop. Apostrophe's own power handler is disabled, so keymon owns KEY_POWER and the sleep handshake instead of the pak running suspend/poweroff directly.",
     "v0.3.0": "Cooperation layer: in-process full-fidelity HOME panel, dynamic overlay ownership (menu app / streaming system fallback), volume/brightness HUD, sleep inhibit while streaming, SDK battery/status rows.",
     "v0.2.0": "Self-contained fork: Apostrophe host seam, bundled spruce 2.7.0 engine and libs, C3 session launch, controlled stream spawn for the cooperation SDK, and the vendored full-fidelity NextUI overlay renderer."

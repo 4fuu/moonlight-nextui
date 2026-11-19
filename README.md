@@ -37,9 +37,10 @@ ctest --test-dir build-host --output-on-failure
 
 ## Status
 
-Baseline streaming works and the SDK cooperation layer is implemented. v0.3.1
+Baseline streaming works and the SDK cooperation layer is implemented. v0.3.2
 ships the **system HOME/HUD fallback by default** (stable after the v0.3.0
-device freeze); the in-process full-fidelity panel is opt-in with diagnostics.
+device freeze) and the SDK request/event lock fix; the in-process
+full-fidelity panel is opt-in with diagnostics.
 Sleep inhibit during a stream and SDK battery/status remain active. Device
 acceptance is pending. See [NEXTUI.md](NEXTUI.md#status).
 

@@ -54,8 +54,12 @@ static atomic_int s_streaming;
 static atomic_int s_quit;
 static atomic_int s_home_pending;
 static atomic_int s_connected;
-/* -1: nothing pending; 0/1: overlay.state to report from the SDK thread. */
+/* -1: nothing pending; 0/1: overlay.state to report from the SDK thread. A
+ * failed report is re-queued (unless a newer transition replaced it) so a
+ * timeout cannot leave devserv believing the panel is still open. */
 static atomic_int s_overlay_state_pending;
+static int s_overlay_state_retries;
+#define OVERLAY_STATE_RETRIES 3
 /* Set by the UI thread when the panel failed to open; the SDK thread owns the
  * overlay.host(false) request so the UI thread never waits on devserv. */
 static atomic_int s_yield_pending;
@@ -387,9 +391,31 @@ static void overlay_toggle(void)
     }
 }
 
+/*
+ * The host bridge stops calling coop_poll() once the overlay is open (it owns
+ * the frame), so the panel's own input and the HOME close have to be driven
+ * from the draw path as well. Both run on the UI thread; the pending flag is
+ * exchanged exactly once, so a frame cannot toggle twice.
+ */
+static void coop_host_tick(void)
+{
+    if (atomic_exchange(&s_home_pending, 0)) {
+        ap_log("nextui: HOME consumed by main loop");
+        s_home_at = now_ms();
+        overlay_toggle();
+    }
+    if (s_overlay && ApostropheOverlayHost_isOpen(s_overlay))
+        ApostropheOverlayHost_poll(s_overlay);
+}
+
 static int coop_poll(void* user)
 {
     (void)user;
+
+    /* While the panel is open the bridge never calls this; coop_draw() drives
+     * its input and the HOME close instead. */
+    if (s_overlay && ApostropheOverlayHost_isOpen(s_overlay))
+        return 1;
 
     /* HOME arrives as an overlay.home event. Without a devserv connection the
      * manifest still makes us the adapted app, so read KEY_HOMEPAGE ourselves
@@ -407,10 +433,8 @@ static int coop_poll(void* user)
         home_key_was_down = down;
     }
 
-    if (s_overlay && ApostropheOverlayHost_isOpen(s_overlay)) {
-        ApostropheOverlayHost_poll(s_overlay);
+    if (s_overlay && ApostropheOverlayHost_isOpen(s_overlay))
         return 1;
-    }
 
     /* A panel that never becomes open would leave HOME routed to a process
      * that cannot draw. Yield to the system for the rest of the session. */
@@ -431,6 +455,8 @@ static int coop_poll(void* user)
 static void coop_draw(void* user, SDL_Renderer* renderer)
 {
     (void)user;
+    if (s_overlay && ApostropheOverlayHost_isOpen(s_overlay))
+        coop_host_tick();
     if (s_overlay) {
         if (ApostropheOverlayHost_isOpen(s_overlay)) {
             unsigned n = ++s_draw_count;
@@ -563,11 +589,22 @@ static void* sdk_thread(void* arg)
             ap_log("nextui: reporting overlay.state(%d)", overlay_state);
             NextuiAppStatus st =
                 nextui_app_overlay_set_open(s_app, overlay_state);
-            if (st != NEXTUI_APP_OK)
+            if (st != NEXTUI_APP_OK) {
                 ap_log("nextui: overlay.state(%d) failed: %s", overlay_state,
                        nextui_app_status_string(st));
-            else
+                if (s_overlay_state_retries++ < OVERLAY_STATE_RETRIES) {
+                    /* Only if no newer transition arrived meanwhile. */
+                    int expected = -1;
+                    atomic_compare_exchange_strong(&s_overlay_state_pending,
+                                                   &expected, overlay_state);
+                } else {
+                    s_overlay_state_retries = 0;
+                    log_line("overlay.state kept failing; giving up");
+                }
+            } else {
+                s_overlay_state_retries = 0;
                 ap_log("nextui: overlay.state(%d) ok", overlay_state);
+            }
         }
 
         if (atomic_exchange(&s_yield_pending, 0) && nextui_app_is_connected(s_app)) {
@@ -621,7 +658,7 @@ void nextui_coop_init(void)
 
     NextuiAppConfig config;
     memset(&config, 0, sizeof(config));
-    config.client_name = "moonlight/0.3.1";
+    config.client_name = "moonlight/0.3.2";
     config.connect_timeout_ms = 1500;
     config.io_timeout_ms = 1500;
     config.log = log_sdk;
@@ -807,6 +844,11 @@ nextui_overlay_owner nextui_coop_overlay_owner(void)
     if (atomic_load(&s_streaming)) return NEXTUI_OVERLAY_SYSTEM;
     if (!s_overlay || !s_hosting) return NEXTUI_OVERLAY_SYSTEM;
     return NEXTUI_OVERLAY_APP;
+}
+
+bool nextui_coop_overlay_open(void)
+{
+    return s_overlay && ApostropheOverlayHost_isOpen(s_overlay);
 }
 
 bool nextui_coop_quit_requested(void)

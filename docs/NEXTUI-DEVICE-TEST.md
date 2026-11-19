@@ -48,7 +48,7 @@ but app-action/system-feedback have no session to route to.
 adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf app-action overlay'
 ```
 
-Expected in v0.3.1: `"handled_by_system":true` and `"overlay_host":false`.
+Expected in v0.3.2: `"handled_by_system":true` and `"overlay_host":false`.
 Pressing HOME opens NextUI's system panel; the app log shows
 `nextui: init overlay_mode=system-fallback` and `nextui: overlay.host(0) -> ok`.
 The app process must not draw a panel.
@@ -163,9 +163,20 @@ nextui: reporting overlay.state(1)
 nextui: overlay.state(1) ok
 ```
 
+Then press HOME again: the panel must close, with
+
+```text
+nextui: overlay.home event
+nextui: HOME consumed by main loop
+nextui: panel close begin
+nextui: panel close returned open=0
+nextui: reporting overlay.state(0)
+nextui: overlay.state(0) ok
+```
+
 If it stalls, capture the full `Moonlight.txt`; a 2 s open watchdog will log
 `panel did not open ... yielding hosting` and return HOME to the system. The
-v0.3.1 UI thread no longer sends `overlay.state`, so the old
+v0.3.2 UI thread no longer sends `overlay.state`, so the old
 `UIOverlay_open -> focus_changed -> nextui_app_overlay_set_open` blocking path
 is gone from this build; the SDK request lock fix is still required for the
 opt-in path to be considered reliable.
