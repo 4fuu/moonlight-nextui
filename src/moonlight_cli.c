@@ -3,6 +3,7 @@
 #include "nextui_coop.h"
 
 #include <errno.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -10,6 +11,53 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <poll.h>
+#include <time.h>
+
+/*
+ * The engine is a child process group. Keep its pid in a process-wide slot so
+ * every wrapper exit path can stop it: the normal ml_stream path, an atexit
+ * hook (exit(0) from a widget/power path), and the stream signal handlers.
+ */
+static volatile sig_atomic_t s_engine_pid;
+static volatile sig_atomic_t s_engine_signal;
+static int s_engine_atexit_registered;
+
+static void terminate_stream(pid_t pid, int graceful);
+
+static void engine_atexit(void)
+{
+    pid_t pid = (pid_t)s_engine_pid;
+    if (pid <= 0) return;
+    s_engine_pid = 0;
+    terminate_stream(pid, 1);
+}
+
+static void register_engine(pid_t pid)
+{
+    s_engine_pid = (sig_atomic_t)pid;
+    if (!s_engine_atexit_registered) {
+        if (atexit(engine_atexit) == 0)
+            s_engine_atexit_registered = 1;
+    }
+}
+
+static void unregister_engine(pid_t pid)
+{
+    if ((pid_t)s_engine_pid == pid)
+        s_engine_pid = 0;
+}
+
+static void engine_signal_handler(int sig)
+{
+    if (s_engine_pid > 0) {
+        /* The stream loop owns the graceful SIGTERM/wait/SIGKILL sequence. */
+        s_engine_signal = sig;
+        return;
+    }
+
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 static void parse_pin(const char *line, char *pin_out, int pin_size)
 {
@@ -229,18 +277,56 @@ static pid_t spawn_stream(char *const argv[])
     return pid;
 }
 
-static void terminate_stream(pid_t pid)
+static void terminate_stream(pid_t pid, int graceful)
 {
+    if (pid <= 0) return;
+
     kill(-pid, SIGTERM);
-    for (int i = 0; i < 20; i++) {
-        if (waitpid(pid, NULL, WNOHANG) == pid)
-            return;
-        usleep(100 * 1000);
+
+    if (graceful) {
+        for (int i = 0; i < 25; i++) {
+            pid_t r = waitpid(pid, NULL, WNOHANG);
+            if (r == pid) {
+                unregister_engine(pid);
+                return;
+            }
+            if (r < 0 && errno != EINTR) {
+                unregister_engine(pid);
+                return;
+            }
+            struct timespec delay = { .tv_sec = 0, .tv_nsec = 100 * 1000 * 1000 };
+            nanosleep(&delay, NULL);
+        }
     }
+
     kill(-pid, SIGKILL);
     /* SIGKILL cannot be caught, so this returns promptly; without it the
      * wrapper would carry a zombie for the rest of its life. */
-    waitpid(pid, NULL, 0);
+    while (waitpid(pid, NULL, 0) < 0 && errno == EINTR) { }
+    unregister_engine(pid);
+}
+
+static struct sigaction s_old_sigterm, s_old_sigint, s_old_sighup, s_old_sigquit;
+
+static void install_stream_signals(void)
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_handler = engine_signal_handler;
+    sigemptyset(&action.sa_mask);
+
+    sigaction(SIGTERM, &action, &s_old_sigterm);
+    sigaction(SIGINT, &action, &s_old_sigint);
+    sigaction(SIGHUP, &action, &s_old_sighup);
+    sigaction(SIGQUIT, &action, &s_old_sigquit);
+}
+
+static void restore_stream_signals(void)
+{
+    sigaction(SIGTERM, &s_old_sigterm, NULL);
+    sigaction(SIGINT, &s_old_sigint, NULL);
+    sigaction(SIGHUP, &s_old_sighup, NULL);
+    sigaction(SIGQUIT, &s_old_sigquit, NULL);
 }
 
 int ml_stream(const ml_config *cfg, const char *app_name)
@@ -270,7 +356,25 @@ int ml_stream(const ml_config *cfg, const char *app_name)
 
     nextui_coop_stream_begin();
 
+    s_engine_signal = 0;
+
+    /* Block the termination signals across fork() so a signal cannot arrive
+     * between the child existing and s_engine_pid being registered. */
+    sigset_t block, old_mask;
+    sigemptyset(&block);
+    sigaddset(&block, SIGTERM);
+    sigaddset(&block, SIGINT);
+    sigaddset(&block, SIGHUP);
+    sigaddset(&block, SIGQUIT);
+    pthread_sigmask(SIG_BLOCK, &block, &old_mask);
+
     pid_t pid = spawn_stream(argv);
+    if (pid > 0) {
+        register_engine(pid);
+        install_stream_signals();
+    }
+    pthread_sigmask(SIG_SETMASK, &old_mask, NULL);
+
     if (pid < 0) {
         ap_log("moonlight: failed to spawn engine");
         nextui_coop_stream_end();
@@ -282,9 +386,22 @@ int ml_stream(const ml_config *cfg, const char *app_name)
     bool quit_requested = false;
 
     for (;;) {
+        if (s_engine_signal) {
+            int sig = (int)s_engine_signal;
+            s_engine_signal = 0;
+            ap_log("moonlight: signal %d; stopping engine", sig);
+            terminate_stream(pid, 1);
+            reaped = true;
+            restore_stream_signals();
+            signal(sig, SIG_DFL);
+            raise(sig);
+            return -1;
+        }
+
         pid_t r = waitpid(pid, &status, WNOHANG);
         if (r == pid) {
             reaped = true;
+            unregister_engine(pid);
             break;
         }
         if (r < 0 && errno != EINTR)
@@ -298,7 +415,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
         if (nextui_coop_quit_requested()) {
             ap_log("moonlight: cooperation requested stream end");
             quit_requested = true;
-            terminate_stream(pid);
+            terminate_stream(pid, 1);
             reaped = true;
             break;
         }
@@ -307,7 +424,9 @@ int ml_stream(const ml_config *cfg, const char *app_name)
     }
 
     if (!reaped)
-        terminate_stream(pid);
+        terminate_stream(pid, 1);
+    unregister_engine(pid);
+    restore_stream_signals();
 
     nextui_coop_stream_end();
 

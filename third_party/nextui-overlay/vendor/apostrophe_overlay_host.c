@@ -91,11 +91,15 @@ static int host_exit_to_desktop(void* user)
 {
 	ApostropheOverlayHost* host = (ApostropheOverlayHost*)user;
 
-	if (host->config.exit_to_desktop &&
+	if (!host->config.exit_to_desktop ||
 		!host->config.exit_to_desktop(host->config.user))
 		return 0;
 
-	return ap_host_request_quit();
+	/* The app callback owns the quit decision. It sets its stream quit flag
+	 * and, when no engine is running, requests the Apostrophe host quit. This
+	 * keeps a streaming Exit from unwinding the process before ml_stream()
+	 * has terminated the engine. */
+	return 1;
 }
 
 ApostropheOverlayHost* ApostropheOverlayHost_create(const ApostropheOverlayConfig* config)

@@ -1,13 +1,14 @@
 {
   "id": "4fuu.moonlight",
   "name": "Moonlight",
-  "version": "v0.3.4",
+  "version": "v0.3.5",
   "type": "TOOL",
   "description": "Stream games from your PC with native-resolution support. Rebuilt Apostrophe wrapper with the bundled spruce moonlight-embedded engine; pair, manage servers, and launch streams from a native NextUI interface.",
   "author": "4fuu (wrapper originally by richieszemeredi)",
   "repo_url": "https://github.com/4fuu/moonlight-nextui",
   "release_filename": "Moonlight.pakz",
   "changelog": {
+    "v0.3.5": "Stop the engine on every wrapper exit path. The spawned engine is registered process-wide; normal stream end, the overlay Exit action, atexit (including exit(0) from a widget/power path) and SIGTERM/SIGINT/SIGHUP/SIGQUIT all send SIGTERM to the engine process group, wait up to 2.5 s for the engine's graceful shutdown, then SIGKILL and reap. The overlay Exit action now sets the same quit flag ml_stream polls instead of unwinding past the child cleanup, and the vendored host adapter leaves the quit decision to the app. Engine config files are now written as key = value (moonlight-embedded's format) while the loader still accepts legacy key=value; streaming resolution remains argv-authoritative.",
     "v0.3.4": "Fix the libnsl ABI regression from v0.3.3: the standalone libnsl2 build does not export yp_get_default_domain@GLIBC_2.17, so libwrap failed before main. The pak now uses focal libc6's libnsl.so.1 (the same file the spruce package ships) and drops the unneeded libtirpc/Kerberos tail. CI dry-runs bin/moonlight under qemu-user against the device sysroot, so a symbol-version mismatch fails the build.",
     "v0.3.3": "Restore the complete engine library closure: 21 second-level dependencies were missing from v0.3.2 (libpulsecommon-13.99, the PulseAudio audio tail, xcb/X11, libnsl and its Kerberos tail), so bin/moonlight could not start on device. The pak now bundles all 43 non-system libraries. make-pak and CI resolve every NEEDED entry and fail on anything unresolved.",
     "v0.3.2": "Cooperation client updated to nextui-app-sdk 27e5597 (request/event lock split; a slow or blocked request can no longer stop the event stream). The in-process HOME panel now keeps polling its own input while it owns the frame, so HOME opens and closes it and the buttons work; previously the bridge stopped calling the host poll once the panel was up. overlay.state is re-queued after a timeout so devserv cannot keep a stale open/closed view.",

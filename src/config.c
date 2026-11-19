@@ -1,6 +1,7 @@
 #include "apostrophe.h"
 #include "moonlight.h"
 
+#include <ctype.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -19,6 +20,16 @@ void get_config_path(char *out, int out_size)
         if (!home) home = "/tmp";
         snprintf(out, out_size, "%s/.userdata/shared/moonlight", home);
     }
+}
+
+static char *trim(char *text)
+{
+    while (*text && isspace((unsigned char)*text))
+        text++;
+    char *end = text + strlen(text);
+    while (end > text && isspace((unsigned char)end[-1]))
+        *--end = '\0';
+    return text;
 }
 
 static void ensure_config_dir(void)
@@ -59,8 +70,8 @@ ml_config load_config(void)
         char *eq = strchr(line, '=');
         if (!eq) continue;
         *eq = '\0';
-        const char *key = line;
-        const char *val = eq + 1;
+        const char *key = trim(line);
+        const char *val = trim(eq + 1);
 
         if (strcmp(key, "width") == 0)
             cfg.width = atoi(val);
@@ -108,15 +119,18 @@ int save_config(const ml_config *cfg)
         return -1;
     }
 
-    fprintf(f, "width=%d\n", cfg->width);
-    fprintf(f, "height=%d\n", cfg->height);
-    fprintf(f, "fps=%d\n", cfg->fps);
-    fprintf(f, "bitrate=%d\n", cfg->bitrate);
-    fprintf(f, "active_server=%d\n", cfg->active_server);
+    /* moonlight-embedded's config_file_parse() uses "%ms = %m[^\n]", so it
+     * only accepts spaces around the equals sign. Keep the pak's file in that
+     * format; load_config() still accepts the old key=value files. */
+    fprintf(f, "width = %d\n", cfg->width);
+    fprintf(f, "height = %d\n", cfg->height);
+    fprintf(f, "fps = %d\n", cfg->fps);
+    fprintf(f, "bitrate = %d\n", cfg->bitrate);
+    fprintf(f, "active_server = %d\n", cfg->active_server);
 
     for (int i = 0; i < cfg->server_count; i++) {
-        fprintf(f, "server.%d.name=%s\n", i, cfg->servers[i].name);
-        fprintf(f, "server.%d.host=%s\n", i, cfg->servers[i].host);
+        fprintf(f, "server.%d.name = %s\n", i, cfg->servers[i].name);
+        fprintf(f, "server.%d.host = %s\n", i, cfg->servers[i].host);
     }
 
     fclose(f);
