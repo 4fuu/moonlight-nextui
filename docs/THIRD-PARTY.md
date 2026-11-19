@@ -61,7 +61,7 @@ Local changes to the snapshot (kept to a minimum so it can be refreshed):
 `engine/bin/` is the output of `engine/Dockerfile` and `engine/build.sh`, a
 vendored copy of the spruce build chain
 (<https://github.com/spruceUI/Moonlight-spruce>, Ubuntu 20.04 focal, glibc
-2.31). The v0.4.0-exp1 branch builds the upstream **2.7.1** release:
+2.31). The v0.4.0 experiment branch builds the upstream **2.7.1** release:
 
 - moonlight-embedded `775444287305849ebdf4736c75298ad0713e2d5d` (v2.7.1).
 - moonlight-common-c `b126e481a195fdc7152d211def17190e3434bcce`.

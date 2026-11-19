@@ -2,7 +2,7 @@
 
 Moonlight game streaming for NextUI, built from source in this repository.
 On `main` the streaming engine is the spruce 2.7.0 moonlight-embedded build,
-bundled unmodified. The `v0.4.0-exp1` experiment branch instead builds upstream
+bundled unmodified. The `v0.4.0 experiment` experiment branch instead builds upstream
 2.7.1 with the spruce toolchain (see the engine experiment section); everything
 else — the Apostrophe UI wrapper, the launcher, the cooperation seam, and the
 full-fidelity overlay renderer — is built here.
@@ -143,7 +143,7 @@ devserv (`coop-transitions` and `coop-system-fallback`).
 `src/nextui_coop.c` already answers the ownership question in code
 (`nextui_coop_overlay_owner()`), so M6 has one place to wire the protocol.
 
-## Engine 2.7.1 experiment (v0.4.0-exp1)
+## Engine 2.7.1 experiment (v0.4.0 experiment)
 
 This branch is a bounded experiment, not the final streaming fix. It replaces
 the bundled spruce 2.7.0 engine with upstream moonlight-embedded **2.7.1**
