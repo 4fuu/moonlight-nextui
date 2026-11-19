@@ -41,6 +41,14 @@ cd "$PAK_DIR" || exit 1
 # The shim must win over any stock moonlight binary.
 PATH="$PAK_DIR/shim:$PAK_DIR/bin:$PATH"
 LD_LIBRARY_PATH="$PAK_DIR/bin/libs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# The vendored full-fidelity overlay links libsamplerate (as NextUI does); the
+# system keeps it under .system/<platform>/lib. Keep it after the pak's libs so
+# the bundled engine closure still wins.
+for LIB_DIR in "$SYSTEM_PATH/lib" "$SYSTEM_PATH/../lib"; do
+    if [ -d "$LIB_DIR" ]; then
+        LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$LIB_DIR"
+    fi
+done
 SDL_AUDIODRIVER=alsa
 MOONLIGHT_KEY_DIR=${MOONLIGHT_KEY_DIR:-$SHARED_USERDATA_PATH/moonlight/keys}
 export PATH LD_LIBRARY_PATH SDL_AUDIODRIVER MOONLIGHT_KEY_DIR

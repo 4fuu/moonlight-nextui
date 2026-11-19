@@ -56,6 +56,9 @@ static atomic_int s_home_pending;
 static atomic_int s_connected;
 /* -1: nothing pending; 0/1: overlay.state to report from the SDK thread. */
 static atomic_int s_overlay_state_pending;
+/* Set by the UI thread when the panel failed to open; the SDK thread owns the
+ * overlay.host(false) request so the UI thread never waits on devserv. */
+static atomic_int s_yield_pending;
 
 static ApostropheOverlayHost* s_overlay;
 static int s_hosting;    /* effective overlay.host we last requested */
@@ -362,6 +365,14 @@ static void overlay_close_if_open(void)
 
 static void overlay_toggle(void)
 {
+    static unsigned long long last_toggle;
+    unsigned long long now = now_ms();
+    if (last_toggle && now - last_toggle < 250) {
+        ap_log("nextui: HOME repeat ignored");
+        return;
+    }
+    last_toggle = now;
+
     if (!overlay_create()) return;
     if (ApostropheOverlayHost_isOpen(s_overlay)) {
         ap_log("nextui: panel close requested");
@@ -401,8 +412,7 @@ static int coop_poll(void* user)
         s_home_at = 0;
         ap_log("nextui: panel did not open in %d ms; yielding hosting",
                OVERLAY_OPEN_TIMEOUT_MS);
-        if (s_app && nextui_app_is_connected(s_app))
-            (void)nextui_app_overlay_set_host(s_app, 0);
+        atomic_store(&s_yield_pending, 1);
         ap_host_detach();
         overlay_destroy();
         s_inprocess = 0;
@@ -543,6 +553,15 @@ static void* sdk_thread(void* arg)
             else
                 ap_log("nextui: overlay.state(%d) ok", overlay_state);
         }
+
+        if (atomic_exchange(&s_yield_pending, 0) && nextui_app_is_connected(s_app)) {
+            NextuiAppStatus st = nextui_app_overlay_set_host(s_app, 0);
+            if (st != NEXTUI_APP_OK)
+                ap_log("nextui: overlay.host(0) failed: %s",
+                       nextui_app_status_string(st));
+            else
+                ap_log("nextui: overlay.host(0) ok; HOME now uses the system");
+        }
     }
     return NULL;
 }
@@ -562,6 +581,7 @@ void nextui_coop_init(void)
     s_home_at = 0;
     s_hosting = 0;
     atomic_store(&s_overlay_state_pending, -1);
+    atomic_store(&s_yield_pending, 0);
     memset(&s_status, 0, sizeof(s_status));
 
     const char* mode = getenv("MOONLIGHT_INPROCESS_OVERLAY");
@@ -646,8 +666,8 @@ void nextui_coop_init(void)
     if (pthread_create(&s_thread, NULL, sdk_thread, NULL) == 0) {
         s_thread_started = 1;
         atomic_store(&s_connected, 1);
-        log_line("connected: session=%s overlay_host=%d",
-                 info.session_id, info.overlay_host);
+        log_line("connected: session=%s hosting=%d declared_host=%d",
+                 info.session_id, s_hosting ? 1 : 0, info.overlay_host);
     } else {
         log_line("failed to start the event thread");
     }
