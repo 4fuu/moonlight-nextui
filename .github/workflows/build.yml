@@ -106,9 +106,17 @@ jobs:
 
       - name: Install packaging tools
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
-            zip file python3 ca-certificates qemu-user-static
+          set -e
+          for attempt in 1 2 3; do
+            if apt-get update &&
+               apt-get install -y --no-install-recommends \
+                 zip file python3 ca-certificates; then
+              break
+            fi
+            echo "apt attempt $attempt failed; retrying"
+            sleep 15
+          done
+          command -v zip file python3
 
       - name: Show toolchain
         run: |
@@ -150,6 +158,22 @@ jobs:
             python3 scripts/nextui/check-libs.py dist/Moonlight.pak \
               --sysroot "$SYSROOT"
 
+      - name: Fetch qemu-user
+        run: |
+          set -e
+          python3 - <<'PY'
+          import os, urllib.request
+          url = ("https://github.com/multiarch/qemu-user-static/releases/"
+                 "download/v7.2.0-1/qemu-aarch64-static.tar.gz")
+          urllib.request.urlretrieve(url, os.path.join(os.environ["RUNNER_TEMP"],
+                                                       "qemu-aarch64-static.tar.gz"))
+          PY
+          cd "$RUNNER_TEMP"
+          echo "b5dd968d522fd5d615d27c77fb1ca0847455d0b8badd7492647e7ab674339247  qemu-aarch64-static.tar.gz" |
+            sha256sum -c -
+          tar -xzf qemu-aarch64-static.tar.gz
+          chmod +x qemu-aarch64-static
+
       # NEEDED only proves the soname exists. Symbol versions are resolved at
       # load time, and v0.3.3 shipped a libnsl without the GLIBC_2.17 symbols
       # libwrap references. Run the real loader through qemu against the
@@ -161,7 +185,7 @@ jobs:
           out=$(QEMU_LD_PREFIX="$SYSROOT" \
                 LD_LIBRARY_PATH="$PAK/bin/libs" \
                 SDL_VIDEODRIVER=dummy \
-                qemu-aarch64-static "$PAK/bin/moonlight" --version 2>&1)
+                "$RUNNER_TEMP/qemu-aarch64-static" "$PAK/bin/moonlight" --version 2>&1)
           echo "$out"
           echo "$out" | grep -q '2\.7\.0'
 
