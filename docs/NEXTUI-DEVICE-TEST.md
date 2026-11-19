@@ -53,7 +53,7 @@ but app-action/system-feedback have no session to route to.
 adb shell '/mnt/SDCARD/.system/tg5040/bin/nextdev.elf app-action overlay'
 ```
 
-Expected in v0.3.4: `"handled_by_system":true` and `"overlay_host":false`.
+Expected in v0.3.5: `"handled_by_system":true` and `"overlay_host":false`.
 Pressing HOME opens NextUI's system panel; the app log shows
 `nextui: init overlay_mode=system-fallback` and `nextui: overlay.host(0) -> ok`.
 The app process must not draw a panel.
@@ -94,11 +94,25 @@ adb shell 'for p in $(pidof moonlight); do tr "\0" " " < /proc/$p/cmdline; echo;
 
   Expect `-platform sdl`, `-keydir /mnt/SDCARD/.userdata/shared/moonlight/keys`,
   and `-quitappafter`, then `stream <host> -app ...`.
+- The log shows the resolved config and the launch line with the same mode:
+
+```text
+config: /mnt/SDCARD/.userdata/shared/moonlight/config.txt -> 1024x768@60, 20000 kbps
+moonlight: launching stream: <host> -app '<app>' 1024x768@60 20000kbps
+```
+
+  If the host still negotiates 1280x720, the host is overriding the client
+  mode; capture both sides of the RTSP `SETUP` exchange.
 - Audio plays through ALSA (no PulseAudio/HDMI sink error in the log).
+- Decoding is FFmpeg software H.264 on `-platform sdl`; this is expected.
+  Watch for frame drops at 720p60 versus 1024x768.
 - Input: d-pad, A/B/X/Y, L/R, Start/Select and the sticks all reach the host.
   **This is the highest-risk baseline item.** If buttons are missing or
   swapped, capture `adb shell dumpsys`-equivalent input info and note whether
   SDL recognized the pad. A `gamecontrollerdb.txt` entry is the likely fix.
+- On the host, a Vibepollo/Apollo log must no longer show
+  `Ignoring unknown input packet magic 0x0000000D` with v0.3.5. If it does,
+  capture that host log; the pak's patched library did not load.
 - The engine's normal exit combo returns to the Moonlight menu, not the
   desktop.
 - After exit, no `moonlight` process remains:
@@ -181,7 +195,7 @@ nextui: overlay.state(0) ok
 
 If it stalls, capture the full `Moonlight.txt`; a 2 s open watchdog will log
 `panel did not open ... yielding hosting` and return HOME to the system. The
-v0.3.4 UI thread no longer sends `overlay.state`, so the old
+v0.3.5 UI thread no longer sends `overlay.state`, so the old
 `UIOverlay_open -> focus_changed -> nextui_app_overlay_set_open` blocking path
 is gone from this build; the SDK request lock fix is still required for the
 opt-in path to be considered reliable.

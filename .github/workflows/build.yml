@@ -57,7 +57,7 @@ jobs:
             Tools/tg5040/Moonlight.pak/launch.sh \
             shim/moonlight \
             scripts/nextui/*.sh
-          python3 -m py_compile scripts/nextui/check-libs.py
+          python3 -m py_compile scripts/nextui/check-libs.py scripts/nextui/patch-engine.py
           sh -n Tools/tg5040/Moonlight.pak/launch.sh
           sh -n shim/moonlight
 
@@ -157,6 +157,8 @@ jobs:
           READELF="${CROSS_TRIPLE}-readelf" \
             python3 scripts/nextui/check-libs.py dist/Moonlight.pak \
               --sysroot "$SYSROOT"
+          python3 scripts/nextui/patch-engine.py --check \
+            dist/Moonlight.pak/bin/libs/libmoonlight-common.so.4
 
       - name: Fetch qemu-user and the device glibc
         run: |

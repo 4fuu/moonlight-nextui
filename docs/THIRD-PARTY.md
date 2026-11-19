@@ -72,6 +72,13 @@ spruceOS's shipped Moonlight app:
   at the commit above, plus the build inputs named by that script.
 - `engine/SHA256SUMS` records every bundled binary. No file in `engine/` is
   modified by this repository.
+- **Packaging patch:** `scripts/nextui/patch-engine.py` patches the copy of
+  `libmoonlight-common.so.4` inside the pak. It skips the `ENABLE_HAPTICS`
+  input packet (`ENABLE_HAPTICS_MAGIC 0x0000000D`, `sendEnableHaptics()` in
+  `src/InputStream.c` of moonlight-common-c `8af4562`), which Vibepollo
+  2.18.19 does not recognise. The patch is a single branch at file offset
+  `0x1b5f0` (verified against the SHA-256 above); the vendored library stays
+  unmodified. GPL-3.0 corresponding source is the common-c commit above.
 
 The wrapper executes the engine as a separate process through the PATH shim
 (`shim/moonlight`). GPL-3.0 applies to the engine and its GameStream libraries;

@@ -89,6 +89,9 @@ ml_config load_config(void)
 
     fclose(f);
 
+    ap_log("config: %s -> %dx%d@%d, %d kbps", path, cfg.width, cfg.height,
+           cfg.fps, cfg.bitrate);
+
     if (cfg.active_server >= cfg.server_count)
         cfg.active_server = cfg.server_count > 0 ? 0 : -1;
 

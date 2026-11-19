@@ -42,6 +42,14 @@ for lib in "$ROOT"/engine/bin/libs/*.so*; do
 done
 chmod 755 "$PAK"/bin/libs/*.so*
 
+# moonlight-common 8af4562 sends an ENABLE_HAPTICS packet (magic 0x0D) when
+# the input stream starts. Vibepollo 2.18.19 logs it as an unknown input
+# magic; this handheld has no haptics, so skip the packet. The patch is
+# applied to the pak copy only: engine/bin/libs stays byte-identical to the
+# spruce package and SHA256SUMS keeps matching it.
+python3 "$ROOT/scripts/nextui/patch-engine.py" \
+    "$PAK/bin/libs/libmoonlight-common.so.4"
+
 # pak.json declares "capabilities": ["overlay"]. That is the permission, not a
 # lifetime claim: the wrapper sends overlay.host:false while the engine owns
 # the display and restores it in the menu (contract 7.9). Keep the declaration

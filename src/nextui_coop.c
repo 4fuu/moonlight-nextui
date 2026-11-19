@@ -658,7 +658,7 @@ void nextui_coop_init(void)
 
     NextuiAppConfig config;
     memset(&config, 0, sizeof(config));
-    config.client_name = "moonlight/0.3.4";
+    config.client_name = "moonlight/0.3.5";
     config.connect_timeout_ms = 1500;
     config.io_timeout_ms = 1500;
     config.log = log_sdk;

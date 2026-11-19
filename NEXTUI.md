@@ -20,7 +20,7 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
 | Full-fidelity overlay renderer vendored and building | done, S1/S2 |
-| HOME panel | **system fallback by default** (v0.3.4) |
+| HOME panel | **system fallback by default** (v0.3.5) |
 | In-process full-fidelity panel | opt-in, `MOONLIGHT_INPROCESS_OVERLAY=1` |
 | Volume/brightness HUD cooperation | done, M3 (system HUD by default) |
 | Sleep/wake handshake + stream inhibit | done, M4 |
@@ -69,7 +69,7 @@ subsystems into the app process.
 `pak.json` declares `"capabilities": ["overlay"]` — the permission, not a
 lifetime claim. The effective host is runtime session state (contract §7.9).
 
-**Default (v0.3.4): the app yields hosting for the whole session.** It sends
+**Default (v0.3.5): the app yields hosting for the whole session.** It sends
 `overlay.host:false` at connect, so HOME and the HUD are NextUI's system
 panel/keymon. That panel is the full-fidelity reference, and it is the
 responsive path: the app process does not render, does not read pad input for
@@ -265,6 +265,31 @@ inside a C3 session (`nextui-session.sh`). It does not `exec` over itself, so
 the session's EXIT cleanup always runs. It does not write `/tmp/stay_awake`:
 NextUI does not read that file; while streaming the wrapper holds an SDK
 `sleep.inhibit("streaming", 300000)` lease and refreshes it every 60 s.
+
+## Streaming compatibility
+
+**Input packet 0x0D.** moonlight-common-c sends an `ENABLE_HAPTICS` packet
+(magic `0x0000000D`, one packet, when the input stream starts) to any host
+that reports app version 7.1.0 or newer. The same magic is also the legacy
+pre-Gen5 multi-controller type, so the host log is easy to misread. Vibepollo
+2.18.19's input validator has no entry for it and logs
+`Ignoring unknown input packet magic 0x0000000D`; the packet is dropped. This
+handheld has no haptics, so `scripts/nextui/patch-engine.py` skips the send in
+the **pak copy** of `libmoonlight-common.so.4` (the vendored file stays
+byte-identical). See `docs/THIRD-PARTY.md` for the source reference and the
+exact patch.
+
+**Resolution.** `ml_stream` passes `-width`/`-height` from `config.txt` to the
+engine, and `Moonlight.txt` now logs
+`config: <path> -> <width>x<height>@<fps>, <kbps>` plus the stream launch
+line. If the host still negotiates 1280x720, the host is overriding the
+client mode rather than the wrapper dropping the value.
+
+**Decode path.** `-platform sdl` uses moonlight-embedded's FFmpeg software
+decoder; 2.7.0 has hardware paths for Pi/IMX/Rockchip/Amlogic/VAAPI, but none
+for mainline V4L2 stateless/stateful Cedrus. There is no supported switch to
+Cedrus in this engine, so the pak stays on software H.264. At 1280x720x60 the
+H700 has to decode and scale in software; 1024x768x60 is the lower-cost mode.
 
 ## Engine shim
 

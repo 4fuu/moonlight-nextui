@@ -37,7 +37,7 @@ ctest --test-dir build-host --output-on-failure
 
 ## Status
 
-Baseline streaming works and the SDK cooperation layer is implemented. v0.3.4
+Baseline streaming works and the SDK cooperation layer is implemented. v0.3.5
 ships the **system HOME/HUD fallback by default** (stable after the v0.3.0
 device freeze), the SDK request/event lock fix, and the complete engine
 library closure; the in-process full-fidelity panel is opt-in with
