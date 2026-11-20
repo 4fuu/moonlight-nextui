@@ -67,6 +67,16 @@ if [ -r "$CA_BUNDLE" ]; then
     export CURL_CA_BUNDLE SSL_CERT_FILE
 fi
 
+# Optional user overrides, sourced last so they win over the defaults above
+# (e.g. `export SDL_RENDER_VSYNC=0` for on-device A/B tests). The shim execs
+# the engine from this environment, so the variables reach it.
+USER_ENV="$SHARED_USERDATA_PATH/moonlight/env.sh"
+if [ -f "$USER_ENV" ] && [ -r "$USER_ENV" ]; then
+    # shellcheck source=/dev/null
+    . "$USER_ENV"
+    echo "env=$USER_ENV sourced"
+fi
+
 echo "path=$PATH"
 echo "keydir=$MOONLIGHT_KEY_DIR ca=$CA_BUNDLE"
 
