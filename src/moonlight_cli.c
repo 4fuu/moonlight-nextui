@@ -12,6 +12,9 @@
 #include <signal.h>
 #include <poll.h>
 #include <time.h>
+#ifdef __linux__
+#include <sys/prctl.h>
+#endif
 
 /*
  * The engine is a child process group. Keep its pid in a process-wide slot so
@@ -258,14 +261,32 @@ int ml_list_apps(const char *host, ml_app *apps, int max_apps, int *interrupt)
  * and redirects to bin/moonlight. No shell is involved, so app names with
  * spaces and quotes are passed as one argv element.
  */
-static pid_t spawn_stream(char *const argv[])
+static pid_t spawn_stream(char *const argv[], const sigset_t *mask)
 {
+#ifdef __linux__
+    pid_t parent = getpid();
+#endif
     pid_t pid = fork();
     if (pid < 0)
         return -1;
 
     if (pid == 0) {
         setpgid(0, 0);
+#ifdef __linux__
+        /* Last-resort net: if this wrapper dies without running its cleanup
+         * (the launch parent escalates to SIGKILL, or a crash), the kernel
+         * kills the engine with it. The engine is in its own process group,
+         * so nothing else would reap it and the stream would continue behind
+         * the desktop. */
+        prctl(PR_SET_PDEATHSIG, SIGKILL);
+        if (getppid() != parent)
+            _exit(127); /* the wrapper died before prctl() */
+#endif
+        /* ml_stream() blocks the termination signals around fork() so none can
+         * arrive before the pid is registered; the child must not inherit that
+         * mask. A blocked SIGTERM is never delivered, so the engine would
+         * ignore the graceful stop and only die from the SIGKILL fallback. */
+        sigprocmask(SIG_SETMASK, mask, NULL);
         signal(SIGINT, SIG_DFL);
         signal(SIGTERM, SIG_DFL);
         execvp(argv[0], argv);
@@ -284,7 +305,11 @@ static void terminate_stream(pid_t pid, int graceful)
     kill(-pid, SIGTERM);
 
     if (graceful) {
-        for (int i = 0; i < 25; i++) {
+        /* Stay inside the launch parent's exit grace (NextUI's default is
+         * 1500 ms) so the engine is reaped before the parent escalates to
+         * SIGKILL on this process; a wrapper killed mid-wait would orphan the
+         * engine in its own process group. */
+        for (int i = 0; i < 10; i++) {
             pid_t r = waitpid(pid, NULL, WNOHANG);
             if (r == pid) {
                 unregister_engine(pid);
@@ -368,7 +393,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
     sigaddset(&block, SIGQUIT);
     pthread_sigmask(SIG_BLOCK, &block, &old_mask);
 
-    pid_t pid = spawn_stream(argv);
+    pid_t pid = spawn_stream(argv, &old_mask);
     if (pid > 0) {
         register_engine(pid);
         install_stream_signals();

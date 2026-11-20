@@ -20,7 +20,7 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | `pak.json` identity + `overlay` capability | done, S4/M6 |
 | `ml_stream` controlled spawn + cooperation seam | done, S5 |
 | Full-fidelity overlay renderer vendored and building | done, S1/S2 |
-| HOME panel | **system fallback by default** (v0.3.5) |
+| HOME panel | **system fallback by default** (v0.3.6) |
 | In-process full-fidelity panel | opt-in, `MOONLIGHT_INPROCESS_OVERLAY=1` |
 | Volume/brightness HUD cooperation | done, M3 (system HUD by default) |
 | Sleep/wake handshake + stream inhibit | done, M4 |
@@ -69,7 +69,7 @@ subsystems into the app process.
 `pak.json` declares `"capabilities": ["overlay"]` — the permission, not a
 lifetime claim. The effective host is runtime session state (contract §7.9).
 
-**Default (v0.3.5): the app yields hosting for the whole session.** It sends
+**Default (v0.3.6): the app yields hosting for the whole session.** It sends
 `overlay.host:false` at connect, so HOME and the HUD are NextUI's system
 panel/keymon. That panel is the full-fidelity reference, and it is the
 responsive path: the app process does not render, does not read pad input for
@@ -136,11 +136,27 @@ process-wide. Every wrapper exit path stops it before the wrapper returns:
 - SIGTERM/SIGINT/SIGHUP/SIGQUIT, which set a stream-loop flag so the engine is
   stopped before the wrapper re-raises the signal.
 
-The stop sequence is SIGTERM to the whole process group, a wait of up to
-2.5 s for the engine's own signal loop to tear down video/audio and restore the
+The stop sequence is SIGTERM to the whole process group, a wait of up to 1 s
+for the engine's own signal loop to tear down video/audio and restore the
 display, then SIGKILL and `waitpid` as the fallback. The engine's `loop.c`
 handles SIGTERM/SIGINT/SIGQUIT/SIGHUP, so the normal path is graceful; the
 SIGKILL is only for a wedged engine.
+
+Two details make the device's exit path work:
+
+- The termination signals are blocked across `fork()` so none can arrive
+  before the engine pid is registered, and the child restores the inherited
+  mask before `execvp()`. Without that the engine would start with SIGTERM
+  blocked, never see the stop request, and only die from the SIGKILL fallback —
+  which used to take longer than the launch parent's grace.
+- The graceful wait stays inside that grace (NextUI's launch parent sends
+  SIGKILL 1500 ms after its SIGTERM), so the engine is reaped before the
+  wrapper can be killed mid-cleanup. An engine orphaned that way keeps
+  streaming behind the desktop.
+- The engine is spawned with `PR_SET_PDEATHSIG(SIGKILL)`, so if the wrapper
+  dies without reaching its cleanup — the parent's SIGKILL escalation, a crash,
+  a power path — the kernel kills the engine with it instead of leaving a
+  stream running behind the desktop.
 
 The wrapper's `config.txt` is written as `key = value` because
 moonlight-embedded's `config_file_parse()` requires spaces around the equals
