@@ -29,6 +29,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int failures;
@@ -46,11 +47,14 @@ static int failures;
 static char tmpdir[512];
 static char argv_log[512];
 static char group_log[512];
+/* Native engine stand-in from argv[1]; realpath() needs a PATH_MAX buffer. */
+static char fake_engine[4096];
 
 static void write_engine(const char* body)
 {
     char path[640];
     snprintf(path, sizeof(path), "%s/moonlight", tmpdir);
+    unlink(path); /* never write through a leftover link to another binary */
     FILE* f = fopen(path, "w");
     if (!f) {
         perror("fopen engine");
@@ -343,6 +347,145 @@ static void test_signal_terminates_engine(void)
         CHECK(pid_gone(engine, 4000), "engine is gone after SIGTERM");
 }
 
+static long long now_ms(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (long long)t.tv_sec * 1000 + t.tv_nsec / 1000000;
+}
+
+static int engine_mask_blocked(const char* path)
+{
+    FILE* f = fopen(path, "r");
+    if (!f) return -1;
+    int blocked = -1;
+    if (fscanf(f, "term_blocked=%d", &blocked) != 1)
+        blocked = -1;
+    fclose(f);
+    return blocked;
+}
+
+/* Put the native engine stand-in on PATH under the name ml_stream() execs. */
+static int install_native_engine(char* link_path, size_t size)
+{
+    snprintf(link_path, size, "%s/moonlight", tmpdir);
+    unlink(link_path);
+    return symlink(fake_engine, link_path) == 0;
+}
+
+/*
+ * Exit to desktop during a stream is a SIGTERM from NextUI's launch parent.
+ * Two things have to hold for that to end the stream instead of leaving an
+ * orphaned engine:
+ *
+ *   1. the engine must not inherit the signal mask ml_stream() uses around
+ *      fork() — a blocked SIGTERM is never delivered, so only SIGKILL ends it;
+ *   2. the wrapper must finish its cleanup inside the parent's 1500 ms grace,
+ *      or the parent SIGKILLs it while the engine is still running.
+ *
+ * The fake engine here is a native binary; a shell script clears an inherited
+ * blocked mask and would hide the first half.
+ */
+static void test_engine_signal_delivery(void)
+{
+    printf("engine signal delivery\n");
+
+    char link_path[640], pid_path[640], mask_path[640];
+    snprintf(pid_path, sizeof(pid_path), "%s/engine-delivery.pid", tmpdir);
+    snprintf(mask_path, sizeof(mask_path), "%s/engine-delivery.mask", tmpdir);
+    unlink(pid_path);
+    unlink(mask_path);
+
+    /* ml_stream() execs the bare name "moonlight", so a link with that name
+     * runs the native stand-in unchanged. */
+    if (!install_native_engine(link_path, sizeof(link_path))) {
+        CHECK(0, "native engine installed on PATH");
+        return;
+    }
+
+    pid_t wrapper = fork();
+    if (wrapper == 0) {
+        setenv("MOONLIGHT_TEST_ENGINE_PID", pid_path, 1);
+        setenv("MOONLIGHT_TEST_ENGINE_MASK", mask_path, 1);
+        stream_job job = { .cfg = base_config(), .rc = -1 };
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_stream, &job) != 0)
+            _exit(3);
+        for (;;)
+            pause();
+    }
+
+    CHECK(wrapper > 0, "wrapper child started");
+
+    pid_t engine = 0;
+    CHECK(wait_for_engine(pid_path, &engine, 3000), "engine started");
+    CHECK(engine_mask_blocked(mask_path) == 0,
+          "the engine does not inherit the wrapper's blocked SIGTERM");
+
+    long long started = now_ms();
+    kill(wrapper, SIGTERM);
+
+    int status = 0;
+    if (!wait_child(wrapper, &status, 6000)) {
+        kill(wrapper, SIGKILL);
+        (void)waitpid(wrapper, NULL, 0);
+        CHECK(0, "wrapper exits after SIGTERM");
+        if (engine > 0) kill(engine, SIGKILL);
+        return;
+    }
+    long long elapsed = now_ms() - started;
+
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGTERM,
+          "wrapper re-raises SIGTERM after cleanup");
+    if (engine > 0)
+        CHECK(pid_gone(engine, 2000), "engine exits on the graceful SIGTERM");
+    CHECK(elapsed < 1400, "cleanup finishes inside the launch parent's grace");
+
+    /* The remaining tests install a shell script at the same name. */
+    unlink(link_path);
+}
+
+/*
+ * The launch parent's last resort is SIGKILL on the wrapper once the exit
+ * grace has expired, and a crash skips every cleanup path. The engine leads its
+ * own process group, so nothing would reap it: it must die with the wrapper.
+ */
+static void test_wrapper_death_terminates_engine(void)
+{
+    printf("engine lives and dies with the wrapper\n");
+
+    char link_path[640], pid_path[640];
+    snprintf(pid_path, sizeof(pid_path), "%s/pdeathsig-engine.pid", tmpdir);
+    unlink(pid_path);
+    if (!install_native_engine(link_path, sizeof(link_path))) {
+        CHECK(0, "native engine installed on PATH");
+        return;
+    }
+
+    pid_t wrapper = fork();
+    if (wrapper == 0) {
+        setenv("MOONLIGHT_TEST_ENGINE_PID", pid_path, 1);
+        stream_job job = { .cfg = base_config(), .rc = -1 };
+        pthread_t thread;
+        if (pthread_create(&thread, NULL, run_stream, &job) != 0)
+            _exit(3);
+        for (;;)
+            pause();
+    }
+
+    CHECK(wrapper > 0, "wrapper child started");
+    pid_t engine = 0;
+    CHECK(wait_for_engine(pid_path, &engine, 3000), "engine started");
+
+    kill(wrapper, SIGKILL);
+    (void)waitpid(wrapper, NULL, 0);
+
+    if (engine > 0)
+        CHECK(pid_gone(engine, 3000), "engine is gone after the wrapper is killed");
+
+    unlink(link_path);
+}
+
 static void test_quit_flag_terminates_engine(void)
 {
     printf("quit flag cleanup\n");
@@ -405,8 +548,14 @@ static void test_cooperation_state(void)
           "the pre-stream owner is restored");
 }
 
-int main(void)
+int main(int argc, char** argv)
 {
+    if (argc < 2 || !argv[1][0] ||
+        realpath(argv[1], fake_engine) == NULL) {
+        fprintf(stderr, "usage: %s <fake-engine-binary>\n", argv[0]);
+        return 2;
+    }
+
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/moonlight-spawn-test-XXXXXX");
     if (!mkdtemp(tmpdir)) {
         perror("mkdtemp");
@@ -426,6 +575,8 @@ int main(void)
     test_cooperation_state();
     test_atexit_terminates_engine();
     test_signal_terminates_engine();
+    test_engine_signal_delivery();
+    test_wrapper_death_terminates_engine();
     test_quit_flag_terminates_engine();
 
     char cmd[600];

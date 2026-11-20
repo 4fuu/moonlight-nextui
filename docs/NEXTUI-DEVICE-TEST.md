@@ -101,6 +101,10 @@ adb shell 'for p in $(pidof moonlight); do tr "\0" " " < /proc/$p/cmdline; echo;
   SDL recognized the pad. A `gamecontrollerdb.txt` entry is the likely fix.
 - The engine's normal exit combo returns to the Moonlight menu, not the
   desktop.
+- With a stream running, HOME → **Exit to desktop** ends the stream and lands
+  on the NextUI desktop within about a second. The log ends with
+  `signal 15; stopping engine`, and the engine is not left running behind the
+  desktop.
 - After exit, no `moonlight` process remains:
 
 ```sh

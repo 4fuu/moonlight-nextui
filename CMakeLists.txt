@@ -193,7 +193,12 @@ if(NEXTUI_BUILD_TESTS)
         target_compile_definitions(test_stream_spawn PRIVATE NEXTUI_SDK=1)
     endif()
     target_link_libraries(test_stream_spawn PRIVATE ${MOONLIGHT_SDL_LIBS} m pthread)
-    add_test(NAME stream-spawn COMMAND test_stream_spawn)
+
+    # Native engine stand-in: a shell script would clear the exec-time signal
+    # mask, which is exactly what the stream-spawn tests check.
+    add_executable(fake_engine tests/fake_engine.c)
+    add_test(NAME stream-spawn
+             COMMAND test_stream_spawn $<TARGET_FILE:fake_engine>)
 
     # The widget frame loop is the integration point between Apostrophe and the
     # host seam; this checks draw/poll/quit without a widget or a device.
