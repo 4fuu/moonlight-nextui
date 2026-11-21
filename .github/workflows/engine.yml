@@ -275,26 +275,25 @@ jobs:
                    avahi-common/address.h avahi-common/defs.h avahi-common/cdecl.h; do
             curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
           done
-          # The image's PKG_CONFIG_SYSROOT_DIR only rewrites paths that start
-          # with the sysroot, so -I$PREFIX/include survives pkg-config.
+          # The image's pkg-config prefixes every -I with the sysroot, so
+          # these files carry no -I: cmake finds the headers through
+          # CMAKE_PREFIX_PATH, and the build gets the path from it too.
           printf '%s\n' \
             "prefix=$PREFIX" \
-            "includedir=\${prefix}/include" \
             "Name: avahi-client" \
             "Description: Avahi mDNS/DNS-SD client API" \
             "Version: 0.8" \
             "Requires: avahi-common" \
             "Libs: -lavahi-client" \
-            "Cflags: -I\${includedir}" \
+            "Cflags: -DHAVE_AVAHI" \
             > "$PREFIX/lib/pkgconfig/avahi-client.pc"
           printf '%s\n' \
             "prefix=$PREFIX" \
-            "includedir=\${prefix}/include" \
             "Name: avahi-common" \
             "Description: Avahi mDNS/DNS-SD common definitions" \
             "Version: 0.8" \
             "Libs: -lavahi-common" \
-            "Cflags: -I\${includedir}" \
+            "Cflags: -DHAVE_AVAHI" \
             > "$PREFIX/lib/pkgconfig/avahi-common.pc"
           PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
             pkg-config --cflags --libs avahi-client
@@ -318,8 +317,8 @@ jobs:
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DCMAKE_PREFIX_PATH="$PREFIX" \
             -DENABLE_X11=OFF
-          cat "$PREFIX/lib/pkgconfig/avahi-client.pc"
-          grep -n 'AVAHI' CMakeCache.txt || true
+          grep -n 'AVAHI_INCLUDE_DIRS' CMakeCache.txt
+          grep -q "^AVAHI_INCLUDE_DIRS:INTERNAL=$PREFIX/include" CMakeCache.txt
           make -j"$(nproc)" 2>&1 | tee build.log
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
           grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
