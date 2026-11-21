@@ -191,10 +191,11 @@ jobs:
           tar xf curl.tar.xz
           cd "curl-$CURL_VERSION"
           # The image's PKG_CONFIG_SYSROOT_DIR rewrites every -I into the
-          # sysroot, which ships OpenSSL 1.1; with PKG_CONFIG unset, curl uses
-          # the --with-openssl directory directly for headers and libs.
+          # sysroot, which ships OpenSSL 1.1. With PKG_CONFIG=false curl skips
+          # pkg-config and uses the --with-openssl directory for headers and
+          # libs directly.
           grep -q '^# *define OPENSSL_VERSION_STR "3.3.1"' "$PREFIX/include/openssl/opensslv.h"
-          PKG_CONFIG= ./configure \
+          PKG_CONFIG=false ./configure \
             --host="$CROSS_TRIPLE" \
             --prefix="$PREFIX" \
             --with-openssl="$PREFIX" \
