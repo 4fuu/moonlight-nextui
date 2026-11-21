@@ -1,0 +1,55 @@
+name: Cedar host tests
+
+# Unit tests for the Cedar hardware decoder's portable half: the picture
+# conversion (NV21/NV12, padded stride, crop) and the fallback contract
+# (no vendor libraries -> FFmpeg).
+#
+# The engine itself is built by engine.yml, which applies
+# engine/patches/sdl-cedar-hwdec.patch; this job only exercises the sources in
+# engine/cedar-hwdec/ on the host, where they need no vendor library.
+
+on:
+  push:
+    paths:
+      - 'engine/cedar-hwdec/**'
+  pull_request:
+    paths:
+      - 'engine/cedar-hwdec/**'
+  workflow_dispatch:
+
+concurrency:
+  group: cedar-host-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Conversion and fallback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Limelight.h only; the tests never connect anything.
+      - name: Fetch moonlight-common-c headers
+        run: |
+          set -e
+          git clone --quiet --depth 1 \
+            https://github.com/moonlight-stream/moonlight-common-c.git /tmp/common-c
+
+      - name: Build and run
+        run: |
+          set -e
+          cd engine/cedar-hwdec
+          CFLAGS="-std=gnu99 -Wall -Wextra -Werror -Wno-unused-parameter -O2"
+          SOURCES="src/video/cedar_sdl.c src/cedar/cedar.c src/cedar/cedar_sync.c"
+          for test in test_cedar_convert test_cedar_fallback; do
+            echo "== $test"
+            gcc $CFLAGS -Isrc -I/tmp/common-c/src \
+              -o "/tmp/$test" "tests/$test.c" $SOURCES -ldl -lpthread
+            "/tmp/$test"
+          done
