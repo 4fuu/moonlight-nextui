@@ -317,7 +317,7 @@ jobs:
           PULSE_VER=13.99.1
           PULSE_URL="https://gitlab.freedesktop.org/pulseaudio/pulseaudio/-/raw/v$PULSE_VER/src"
           for h in pulse/def.h pulse/mainloop-api.h pulse/sample.h pulse/cdecl.h \
-                   pulse/version.h pulse/operation.h pulse/channelmap.h pulse/volume.h \
+                   pulse/operation.h pulse/channelmap.h pulse/volume.h \
                    pulse/context.h pulse/stream.h pulse/introspect.h pulse/subscribe.h \
                    pulse/scache.h pulse/error.h pulse/mainloop.h pulse/mainloop-signal.h \
                    pulse/util.h pulse/timeval.h pulse/proplist.h pulse/utf8.h \
@@ -326,6 +326,11 @@ jobs:
             mkdir -p "$PREFIX/include/$(dirname "$h")"
             curl -fsSL --retry 3 -o "$PREFIX/include/$h" "$PULSE_URL/$h"
           done
+          # version.h is generated from version.h.in by meson; fill it in.
+          curl -fsSL --retry 3 -o - "$PULSE_URL/pulse/version.h.in" |
+            sed -e "s/@PA_MAJOR@/13/; s/@PA_MINOR@/99/; s/@PA_MICRO@/1/" \
+            > "$PREFIX/include/pulse/version.h"
+          grep -E 'PA_MAJOR|PA_MINOR|PA_MICRO' "$PREFIX/include/pulse/version.h"
           printf '%s\n' \
             "prefix=$PREFIX" \
             "Name: libpulse-simple" \
