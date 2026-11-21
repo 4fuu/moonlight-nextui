@@ -51,7 +51,11 @@ for LIB_DIR in "$SYSTEM_PATH/lib" "$SYSTEM_PATH/../lib"; do
 done
 SDL_AUDIODRIVER=alsa
 MOONLIGHT_KEY_DIR=${MOONLIGHT_KEY_DIR:-$SHARED_USERDATA_PATH/moonlight/keys}
-export PATH LD_LIBRARY_PATH SDL_AUDIODRIVER MOONLIGHT_KEY_DIR
+# Hardware decode (Cedar VPU) for the stream engine. The engine falls back to
+# its software decoder on any firmware without the vendor libraries, so this
+# is safe by default; `export MOONLIGHT_HWDEC=0` in env.sh turns it off.
+MOONLIGHT_HWDEC=${MOONLIGHT_HWDEC:-1}
+export PATH LD_LIBRARY_PATH SDL_AUDIODRIVER MOONLIGHT_KEY_DIR MOONLIGHT_HWDEC
 
 mkdir -p "$MOONLIGHT_KEY_DIR" 2>/dev/null || true
 
@@ -66,6 +70,11 @@ if [ -r "$CA_BUNDLE" ]; then
     SSL_CERT_FILE="$CA_BUNDLE"
     export CURL_CA_BUNDLE SSL_CERT_FILE
 fi
+
+# Engine development output (decode statistics, latency lines) is off unless
+# explicitly requested with `export MOONLIGHT_DEBUG=1` in env.sh.
+MOONLIGHT_DEBUG=${MOONLIGHT_DEBUG:-0}
+export MOONLIGHT_DEBUG
 
 # Optional user overrides, sourced last so they win over the defaults above
 # (e.g. `export SDL_RENDER_VSYNC=0` for on-device A/B tests). The shim execs

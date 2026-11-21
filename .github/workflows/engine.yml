@@ -127,6 +127,22 @@ jobs:
             git -C "$MOONLIGHT_SRC" apply --verbose "$patch"
             echo "applied $(basename "$patch")"
           done
+          # The frame event's payload is a contract with sdl_loop():
+          # data1 = plane pointers, data2 = the linesize array, which it passes
+          # to SDL_UpdateYUVTexture. Every decoder must set it that way; the
+          # latency hook must stay out of it (a device build once put a
+          # timestamp in data2 and the picture came out garbled).
+          grep -q 'user.data2 = &frame->linesize' "$MOONLIGHT_SRC/src/video/sdl.c"
+          grep -q 'user.data2 = cedar_linesize' "$MOONLIGHT_SRC/src/video/sdl.c"
+          ! grep -q 'user.data2 = sdlLatencyDebug' "$MOONLIGHT_SRC/src/video/sdl.c"
+          grep -q 'int\* linesize = ((int\*) event.user.data2)' "$MOONLIGHT_SRC/src/sdl.c"
+          # The shipped default is quiet: the engine's own statistics
+          # (MOONLIGHT_DEBUG) and the client latency lines
+          # (MOONLIGHT_LATENCY_DEBUG) are opt-in, and nothing prints them
+          # unconditionally.
+          grep -q 'getenv("MOONLIGHT_DEBUG")' "$MOONLIGHT_SRC/src/video/cedar_sdl.c"
+          grep -q 'getenv("MOONLIGHT_LATENCY_DEBUG")' "$MOONLIGHT_SRC/src/sdl.c"
+          grep -q 'if (!sdlLatencyDebug)' "$MOONLIGHT_SRC/src/sdl.c"
           # The one-line change the whole rebuild exists for.
           grep -n '^#define SDL_BUFFER_FRAMES 1$' "$MOONLIGHT_SRC/src/sdl.h"
           grep -n 'SDL_LATENCY_SAMPLES' "$MOONLIGHT_SRC/src/sdl.h"
@@ -338,6 +354,25 @@ jobs:
           # systemd/xcb tail they pull in are not part of this engine.
           cat CMakeFiles/moonlight.dir/flags.make
           test -x moonlight
+          # cedar_sync.c must interpose the vendor SemTimedWait: libcdc_base and
+          # libsbm look it up dynamically, so it has to be in the executable's
+          # dynamic symbol table (ENABLE_EXPORTS -> -rdynamic), not only local.
+          # (Dump to files first: `producer | grep -q` would kill the producer
+          # with SIGPIPE, and this step runs with pipefail.)
+          grep -q -- '-rdynamic' CMakeFiles/moonlight.dir/link.txt
+          "${CROSS_TRIPLE}-readelf" -s --dyn-syms moonlight > /tmp/cedar-dynsyms.txt
+          grep -qw SemTimedWait /tmp/cedar-dynsyms.txt
+          # Hardware decode, when enabled: the Cedar sources are linked in and
+          # the switch is in the binary.
+          grep -q 'ENABLE_CEDAR:BOOL=ON' CMakeCache.txt
+          strings moonlight > /tmp/cedar-strings.txt
+          grep -q 'MOONLIGHT_HWDEC' /tmp/cedar-strings.txt
+          grep -q 'cedar: %s %dx%d@%d, NV21 -> YV12' /tmp/cedar-strings.txt
+          "${CROSS_TRIPLE}-readelf" -s moonlight > /tmp/cedar-syms.txt
+          grep -qw cedar_sdl_init /tmp/cedar-syms.txt
+          # Cedar is dlopen()ed: no vendor library may become a link dependency.
+          "${CROSS_TRIPLE}-readelf" -d moonlight > /tmp/cedar-dyn.txt
+          ! grep -E 'libvdecoder|libvideoengine|libawh|libVE' /tmp/cedar-dyn.txt
           # The build must have compiled SDL (not X11/EGL) as its video backend.
           grep -q 'HAVE_SDL' CMakeFiles/moonlight.dir/flags.make
           ! grep -q 'HAVE_X11\|HAVE_PI\|HAVE_AML\|HAVE_IMX\|HAVE_ROCKCHIP\|HAVE_MMAL' \
