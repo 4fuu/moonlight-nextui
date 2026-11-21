@@ -1,0 +1,69 @@
+name: Cedar host tests
+
+# Unit tests for the Cedar hardware decoder's portable half: the picture
+# conversion (NV21/NV12, padded stride, crop), the fallback contract (no
+# vendor libraries -> FFmpeg), the init path (mock vendor libraries ->
+# cedar_sdl_init() succeeds), and the frame payload the SDL backend receives
+# (planes with the YV12 pitches, the picture's pixels) -- the check missing
+# when a device build uploaded a texture with a timestamp for its strides and
+# came out garbled.
+#
+# The engine itself is built by engine.yml, which applies
+# engine/patches/sdl-cedar-hwdec.patch; this job only exercises the sources in
+# engine/cedar-hwdec/ on the host, where they need no vendor library.
+
+on:
+  push:
+    paths:
+      - 'engine/cedar-hwdec/**'
+  pull_request:
+    paths:
+      - 'engine/cedar-hwdec/**'
+  workflow_dispatch:
+
+concurrency:
+  group: cedar-host-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Conversion and fallback
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # Limelight.h only; the tests never connect anything. Pinned to the
+      # submodule of the engine commit engine.yml builds, so the headers the
+      # tests compile against are the ones the engine has.
+      - name: Fetch the engine's moonlight-common-c headers
+        run: |
+          set -e
+          # A full clone: the submodule gitlink only resolves with the whole
+          # history, and it is a few MB.
+          git clone --quiet \
+            https://github.com/moonlight-stream/moonlight-embedded.git /tmp/engine-src
+          git -C /tmp/engine-src checkout --quiet 274d3db34da764344a7a402ee74e6080350ac0cd
+          git -C /tmp/engine-src submodule update --init --depth 1 \
+            third_party/moonlight-common-c
+          ln -s /tmp/engine-src/third_party/moonlight-common-c /tmp/common-c
+
+      - name: Build and run
+        run: |
+          set -e
+          cd engine/cedar-hwdec
+          CFLAGS="-std=gnu99 -Wall -Wextra -Werror -Wno-unused-parameter -O2"
+          SOURCES="src/video/cedar_sdl.c src/cedar/cedar.c src/cedar/cedar_sync.c"
+          for test in test_cedar_convert test_cedar_fallback test_cedar_init test_cedar_frame; do
+            echo "== $test"
+            # -rdynamic: the init test's mock vendor library resolves
+            # SemTimedWait from the executable, as the engine does.
+            gcc $CFLAGS -rdynamic -Isrc -I/tmp/common-c/src \
+              -o "/tmp/$test" "tests/$test.c" $SOURCES -ldl -lpthread
+            "/tmp/$test"
+          done

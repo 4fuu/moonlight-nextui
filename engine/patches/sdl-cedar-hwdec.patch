@@ -1,0 +1,1626 @@
+SDL video backend: Cedar hardware H.264/HEVC decode (tg5040)
+
+Adds a hardware decode path for the Allwinner A133P (TrimUI Brick Pro) to the
+SDL video backend, opt-in at run time with MOONLIGHT_HWDEC=1. Unset, or any
+other value, keeps the FFmpeg decoder, so the pak behaves as before until the
+launcher exports the variable.
+
+The decoder is the device's CedarC v1.3.0 library, driven through dlopen()
+(src/cedar/), so nothing new is linked and the engine still starts on a
+firmware without the vendor libraries: sdl_setup() then logs why and uses
+FFmpeg. Decoded NV21 pictures are converted to the YV12 texture input in CPU
+and delivered through the same SDL_USEREVENT the FFmpeg path pushes, so the
+existing present path and the wrapper's framebuffer contract are unchanged.
+The renderer callbacks keep CAPABILITY_DIRECT_SUBMIT, as with FFmpeg.
+
+decode loop, pending-picture accounting, PPS/AUD frame closing, stall rebuild
+and DR_NEED_IDR handling are ported from isalin/moonlight-tsp
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index e724721..beb3b3d 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -24,6 +24,9 @@ find_package(Rockchip)
+ find_package(PkgConfig REQUIRED)
+ 
+ option(ENABLE_SDL "Compile SDL support" ON)
++# Cedar (Allwinner A133P) hardware decoding for the SDL backend, loaded with
++# dlopen() at run time; see src/video/cedar_sdl.c.
++option(ENABLE_CEDAR "Compile the Cedar hardware decoder for the SDL backend" ON)
+ option(ENABLE_FFMPEG "Compile FFMPEG support" ON)
+ option(ENABLE_X11 "Compile X11 support (requires ENABLE_FFMPEG)" ON)
+ option(ENABLE_CEC "Compile CEC support" ON)
+@@ -83,9 +86,22 @@ SET(GAMESTREAM_INCLUDE_DIR ./libgamestream)
+ 
+ include_directories("${PROJECT_BINARY_DIR}")
+ 
++if (ENABLE_CEDAR)
++  set(MOONLIGHT_CEDAR_SOURCES
++      ./src/video/cedar_sdl.c
++      ./src/cedar/cedar.c
++      ./src/cedar/cedar_sync.c)
++endif()
++
+ add_subdirectory(libgamestream)
+ 
+ add_executable(moonlight ${SRC_LIST})
++# cedar_sync.c exports SemTimedWait for the vendor libraries' dynamic lookup
++# (libcdc_base/libsbm call it through their PLT). The tg5040 binutils has no
++# --export-dynamic-symbol, so the whole executable exports its symbols.
++if (ENABLE_CEDAR)
++  set_target_properties(moonlight PROPERTIES ENABLE_EXPORTS ON)
++endif()
+ target_link_libraries(moonlight m)
+ target_link_libraries(moonlight gamestream)
+ 
+@@ -169,7 +185,7 @@ if (SOFTWARE_FOUND)
+   if(SDL_FOUND)
+     list(APPEND MOONLIGHT_DEFINITIONS HAVE_SDL)
+     list(APPEND MOONLIGHT_OPTIONS SDL)
+-    target_sources(moonlight PRIVATE ./src/video/sdl.c ./src/audio/sdl.c ./src/input/sdl.c)
++    target_sources(moonlight PRIVATE ./src/video/sdl.c ./src/audio/sdl.c ./src/input/sdl.c ${MOONLIGHT_CEDAR_SOURCES})
+     target_include_directories(moonlight PRIVATE ${SDL_INCLUDE_DIRS})
+     target_link_libraries(moonlight ${SDL_LIBRARIES})
+   endif()
+diff --git a/src/cedar/cedar.c b/src/cedar/cedar.c
+new file mode 100644
+index 0000000..f24682d
+--- /dev/null
++++ b/src/cedar/cedar.c
+@@ -0,0 +1,322 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#include "cedar.h"
++
++#include <dlfcn.h>
++#include <stdarg.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++
++struct cedar_api {
++    int loaded;
++    void *vdecoder;
++    void *videoengine;
++    cedar_create_fn create;
++    cedar_destroy_fn destroy;
++    cedar_initialize_fn initialize;
++    cedar_reset_fn reset;
++    cedar_decode_fn decode;
++    cedar_request_stream_fn request_stream;
++    cedar_submit_stream_fn submit_stream;
++    cedar_request_picture_fn request_picture;
++    cedar_return_picture_fn return_picture;
++    cedar_count_fn valid_pictures;
++    cedar_count_fn stream_frames;
++    cedar_add_plugin_fn add_plugin;
++};
++
++struct cedar_decoder {
++    CedarDecoder *handle;
++    struct cedar_config cfg;
++};
++
++static struct cedar_api api;
++
++/*
++ * Set by cedar_load for every codec plugin that could be registered. The
++ * Brick Pro firmware may not ship libawh265.so (the Smart Pro does); the
++ * decoder side then only ever offers H.264.
++ */
++static struct {
++    int h264;
++    int h265;
++} plugins;
++
++int cedar_has_codec(int codec)
++{
++    return codec == CEDAR_CODEC_H265 ? plugins.h265 : plugins.h264;
++}
++
++static void add_plugin(const char *file, int *present)
++{
++    char path[256];
++    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
++
++    if (dir != NULL && dir[0] != '\0')
++        snprintf(path, sizeof(path), "%s/%s", dir, file);
++    else
++        snprintf(path, sizeof(path), "/usr/lib/%s", file);
++    if (access(path, R_OK) != 0)
++        return;
++    api.add_plugin(path);
++    *present = 1;
++}
++
++static void set_err(char *err, size_t errlen, const char *fmt, ...)
++{
++    va_list ap;
++
++    if (err == NULL || errlen == 0)
++        return;
++    va_start(ap, fmt);
++    vsnprintf(err, errlen, fmt, ap);
++    va_end(ap);
++}
++
++/*
++ * Local change: MOONLIGHT_CEDAR_LIBDIR names the directory the vendor
++ * libraries are loaded from (the host test points it at its mock); unset
++ * means the firmware's /usr/lib, as on the device.
++ */
++static void *open_lib(const char *name)
++{
++    char path[256];
++    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
++    void *h;
++
++    if (dir != NULL && dir[0] != '\0') {
++        snprintf(path, sizeof(path), "%s/%s", dir, name);
++        return dlopen(path, RTLD_NOW | RTLD_GLOBAL);
++    }
++    snprintf(path, sizeof(path), "/usr/lib/%s", name);
++    h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
++    if (h == NULL)
++        h = dlopen(name, RTLD_NOW | RTLD_GLOBAL);
++    return h;
++}
++
++#define LOAD_SYM(handle, field, name)                                        \
++    do {                                                                     \
++        *(void **)(&api.field) = dlsym((handle), (name));                    \
++        if (api.field == NULL) {                                             \
++            set_err(err, errlen, "missing symbol %s", (name));               \
++            return -1;                                                       \
++        }                                                                    \
++    } while (0)
++
++int cedar_load(char *err, size_t errlen)
++{
++    if (api.loaded)
++        return 0;
++
++    /*
++     * RTLD_GLOBAL makes libvdecoder and its dependencies (libcdc_base,
++     * libvideoengine, libVE, libMemAdapter) visible to the codec plugins,
++     * which have no DT_NEEDED entries of their own.
++     */
++    api.vdecoder = open_lib("libvdecoder.so");
++    if (api.vdecoder == NULL) {
++        set_err(err, errlen, "dlopen libvdecoder.so: %s", dlerror());
++        return -1;
++    }
++    api.videoengine = open_lib("libvideoengine.so");
++    if (api.videoengine == NULL) {
++        set_err(err, errlen, "dlopen libvideoengine.so: %s", dlerror());
++        return -1;
++    }
++
++    LOAD_SYM(api.vdecoder, create, "CreateVideoDecoder");
++    LOAD_SYM(api.vdecoder, destroy, "DestroyVideoDecoder");
++    LOAD_SYM(api.vdecoder, initialize, "InitializeVideoDecoder");
++    LOAD_SYM(api.vdecoder, reset, "ResetVideoDecoder");
++    LOAD_SYM(api.vdecoder, decode, "DecodeVideoStream");
++    LOAD_SYM(api.vdecoder, request_stream, "RequestVideoStreamBuffer");
++    LOAD_SYM(api.vdecoder, submit_stream, "SubmitVideoStreamData");
++    LOAD_SYM(api.vdecoder, request_picture, "RequestPicture");
++    LOAD_SYM(api.vdecoder, return_picture, "ReturnPicture");
++    LOAD_SYM(api.vdecoder, valid_pictures, "ValidPictureNum");
++    LOAD_SYM(api.vdecoder, stream_frames, "VideoStreamFrameNum");
++    LOAD_SYM(api.videoengine, add_plugin, "AddVDPluginSingle");
++
++    /*
++     * AddVDPlugin() would dlopen every lib*aw*.so in /usr/lib, including
++     * all audio decoders. Register just the two codecs Moonlight uses.
++     */
++    add_plugin("libawh264.so", &plugins.h264);
++    add_plugin("libawh265.so", &plugins.h265);
++    api.loaded = 1;
++    return 0;
++}
++
++struct cedar_decoder *cedar_open(const struct cedar_config *cfg, char *err,
++                                 size_t errlen)
++{
++    struct cedar_decoder *dec;
++    CedarVideoStreamInfo info;
++    CedarVConfig vc;
++    int ret;
++
++    if (!api.loaded && cedar_load(err, errlen) != 0)
++        return NULL;
++
++    dec = calloc(1, sizeof(*dec));
++    if (dec == NULL) {
++        set_err(err, errlen, "out of memory");
++        return NULL;
++    }
++    dec->cfg = *cfg;
++
++    dec->handle = api.create();
++    if (dec->handle == NULL) {
++        set_err(err, errlen, "CreateVideoDecoder failed");
++        free(dec);
++        return NULL;
++    }
++
++    memset(&info, 0, sizeof(info));
++    info.eCodecFormat = cfg->codec;
++    info.nWidth = cfg->width;
++    info.nHeight = cfg->height;
++    info.nFrameRate = cfg->fps * 1000;
++    info.nFrameDuration = cfg->fps > 0 ? 1000000 / cfg->fps : 0;
++    info.bIsFramePackage = 1;
++
++    memset(&vc, 0, sizeof(vc));
++    vc.eOutputPixelFormat = cfg->pixel_format;
++    vc.bNoBFrames = 1;
++    vc.bDisable3D = 1;
++    vc.nVbvBufferSize = cfg->vbv_bytes > 0 ? cfg->vbv_bytes : 4 << 20;
++    vc.nAlignStride = 16;
++    vc.nDeInterlaceHoldingFrameBufferNum = 0;
++    vc.nDisplayHoldingFrameBufferNum =
++        cfg->display_hold > 0 ? cfg->display_hold : 3;
++    vc.nDecodeSmoothFrameBufferNum = cfg->smooth >= 0 ? cfg->smooth : 1;
++    if (cfg->rotate != 0) {
++        vc.bRotationEn = 1;
++        vc.nRotateDegree = cfg->rotate;
++        vc.nRotateHoldingFrameBufferNum = vc.nDisplayHoldingFrameBufferNum;
++    }
++
++    ret = api.initialize(dec->handle, &info, &vc);
++    if (ret != 0) {
++        /* InitializeVideoDecoder is not transactional: start over. */
++        api.destroy(dec->handle);
++        free(dec);
++        set_err(err, errlen, "InitializeVideoDecoder failed (%d)", ret);
++        return NULL;
++    }
++    return dec;
++}
++
++void cedar_close(struct cedar_decoder *dec)
++{
++    if (dec == NULL)
++        return;
++    if (dec->handle != NULL)
++        api.destroy(dec->handle);
++    free(dec);
++}
++
++int cedar_submit(struct cedar_decoder *dec, const struct cedar_segment *seg,
++                 int count, int64_t pts)
++{
++    CedarVideoStreamDataInfo di;
++    char *buf = NULL, *ring = NULL;
++    int buf_size = 0, ring_size = 0;
++    size_t total = 0, copied = 0;
++    int i;
++
++    for (i = 0; i < count; i++)
++        total += seg[i].len;
++    if (total == 0 || total > (size_t)0x7fffffff)
++        return -1;
++
++    if (api.request_stream(dec->handle, (int)total, &buf, &buf_size, &ring,
++                           &ring_size, 0) != 0)
++        return -2;
++    if (buf == NULL || (size_t)buf_size + (size_t)ring_size < total)
++        return -3;
++
++    for (i = 0; i < count; i++) {
++        const unsigned char *src = seg[i].data;
++        size_t left = seg[i].len;
++
++        while (left > 0) {
++            size_t n;
++            char *dst;
++
++            if (copied < (size_t)buf_size) {
++                n = (size_t)buf_size - copied;
++                dst = buf + copied;
++            } else {
++                n = total - copied;
++                dst = ring + (copied - (size_t)buf_size);
++            }
++            if (n > left)
++                n = left;
++            memcpy(dst, src, n);
++            src += n;
++            left -= n;
++            copied += n;
++        }
++    }
++
++    memset(&di, 0, sizeof(di));
++    di.pData = buf;
++    di.nLength = (int)total;
++    di.nPts = pts;
++    di.nPcr = -1;
++    di.bIsFirstPart = 1;
++    di.bIsLastPart = 1;
++    di.bValid = 1;
++    di.nStreamIndex = 0;
++    if (api.submit_stream(dec->handle, &di, 0) != 0)
++        return -4;
++    return 0;
++}
++
++int cedar_decode(struct cedar_decoder *dec)
++{
++    return api.decode(dec->handle, 0, 0, 0, 0);
++}
++
++CedarVideoPicture *cedar_request_picture(struct cedar_decoder *dec)
++{
++    return api.request_picture(dec->handle, 0);
++}
++
++int cedar_return_picture(struct cedar_decoder *dec, CedarVideoPicture *pic)
++{
++    return api.return_picture(dec->handle, pic);
++}
++
++int cedar_valid_pictures(struct cedar_decoder *dec)
++{
++    return api.valid_pictures(dec->handle, 0);
++}
++
++int cedar_stream_frames(struct cedar_decoder *dec)
++{
++    return api.stream_frames(dec->handle, 0);
++}
++
++void cedar_reset(struct cedar_decoder *dec)
++{
++    api.reset(dec->handle);
++}
++
++const char *cedar_result_name(int result)
++{
++    switch (result) {
++    case CEDAR_RESULT_UNSUPPORTED: return "unsupported";
++    case CEDAR_RESULT_OK: return "ok";
++    case CEDAR_RESULT_FRAME_DECODED: return "frame";
++    case CEDAR_RESULT_CONTINUE: return "continue";
++    case CEDAR_RESULT_KEYFRAME_DECODED: return "keyframe";
++    case CEDAR_RESULT_NO_FRAME_BUFFER: return "no-frame-buffer";
++    case CEDAR_RESULT_NO_BITSTREAM: return "no-bitstream";
++    case CEDAR_RESULT_RESOLUTION_CHANGE: return "resolution-change";
++    default: return "error";
++    }
++}
+diff --git a/src/cedar/cedar.h b/src/cedar/cedar.h
+new file mode 100644
+index 0000000..7e14d30
+--- /dev/null
++++ b/src/cedar/cedar.h
+@@ -0,0 +1,54 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#ifndef MOONLIGHT_TSP_CEDAR_H
++#define MOONLIGHT_TSP_CEDAR_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include "cedarc_abi.h"
++
++struct cedar_config {
++    int codec;          /* CEDAR_CODEC_H264 or CEDAR_CODEC_H265 */
++    int width;
++    int height;
++    int fps;
++    int pixel_format;   /* CEDAR_PIXEL_NV12 or CEDAR_PIXEL_NV21 */
++    int rotate;         /* raw nRotateDegree index, 0 disables rotation */
++    int display_hold;   /* pictures the display may keep */
++    int smooth;         /* extra decoder pictures */
++    int vbv_bytes;      /* compressed stream buffer */
++};
++
++struct cedar_segment {
++    const void *data;
++    size_t len;
++};
++
++struct cedar_decoder;
++
++/* Loads the vendor libraries and registers only the H.264/H.265 plugins. */
++int cedar_load(char *err, size_t errlen);
++
++/* 1 if the plugin for codec (CEDAR_CODEC_*) was found and registered. */
++int cedar_has_codec(int codec);
++
++struct cedar_decoder *cedar_open(const struct cedar_config *cfg, char *err,
++                                 size_t errlen);
++void cedar_close(struct cedar_decoder *dec);
++
++/* Copies one complete access unit into the decoder's stream buffer. */
++int cedar_submit(struct cedar_decoder *dec, const struct cedar_segment *seg,
++                 int count, int64_t pts);
++
++/* Runs the engine; returns a CEDAR_RESULT_* code. */
++int cedar_decode(struct cedar_decoder *dec);
++
++CedarVideoPicture *cedar_request_picture(struct cedar_decoder *dec);
++int cedar_return_picture(struct cedar_decoder *dec, CedarVideoPicture *pic);
++int cedar_valid_pictures(struct cedar_decoder *dec);
++int cedar_stream_frames(struct cedar_decoder *dec);
++void cedar_reset(struct cedar_decoder *dec);
++
++const char *cedar_result_name(int result);
++
++#endif
+diff --git a/src/cedar/cedar_sync.c b/src/cedar/cedar_sync.c
+new file mode 100644
+index 0000000..8c74686
+--- /dev/null
++++ b/src/cedar/cedar_sync.c
+@@ -0,0 +1,165 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#ifndef _GNU_SOURCE
++#define _GNU_SOURCE
++#endif
++#include "cedar_sync.h"
++
++#include <dlfcn.h>
++#include <errno.h>
++#include <limits.h>
++#include <linux/futex.h>
++#include <pthread.h>
++#include <semaphore.h>
++#include <stdatomic.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/syscall.h>
++#include <time.h>
++#include <unistd.h>
++
++typedef int (*semtimedwait_fn)(sem_t *sem, int64_t time_ms);
++
++static _Atomic unsigned idle_seq;
++static _Atomic unsigned waiters;
++static _Atomic unsigned long n_calls, n_blocked, n_timeouts;
++
++static pthread_once_t mode_once = PTHREAD_ONCE_INIT;
++static semtimedwait_fn vendor_fn;
++
++static void pick_mode(void)
++{
++    const char *mode = getenv("TSP_SEMWAIT");
++    void *h;
++
++    if (mode == NULL || strcmp(mode, "vendor") != 0)
++        return;
++    h = dlopen("libcdc_base.so", RTLD_NOW | RTLD_NOLOAD);
++    if (h == NULL)
++        return;
++    /* A handle lookup starts at libcdc_base itself, not at us. */
++    vendor_fn = (semtimedwait_fn)dlsym(h, "SemTimedWait");
++    dlclose(h);
++}
++
++static void announce_block(void)
++{
++    /* Sequentially consistent: pairs with the waiter's waiters++/load. */
++    atomic_fetch_add(&idle_seq, 1);
++    if (atomic_load(&waiters) != 0)
++        syscall(SYS_futex, &idle_seq, FUTEX_WAKE_PRIVATE, INT_MAX, NULL,
++                NULL, 0);
++}
++
++/*
++ * Same contract as the vendor function: wait up to time_ms milliseconds
++ * (-1 = forever) and return 0 if the semaphore was taken, -1 otherwise.
++ */
++/*
++ * Local port: the tg5040 toolchain's ld.bfd 2.31 has no
++ * --export-dynamic-symbol (binutils 2.35+), so the build also links this
++ * binary with -rdynamic and libcdc_base binds to it anyway; the symbol is
++ * visible by default either way.
++ */
++/*
++ * The exported name is only a trampoline: the engine's own callers (the
++ * cedar_sync_seq/cedar_sync_wait pair in cedar_sdl.c) must keep running the
++ * interposed implementation even when TSP_SEMWAIT=vendor forwards the vendor
++ * library's calls back to the vendor function, or the decoder would wait on
++ * a sequence number nobody advances.
++ */
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
++
++__attribute__((visibility("default"))) int SemTimedWait(sem_t *sem,
++                                                         int64_t time_ms)
++{
++    pthread_once(&mode_once, pick_mode);
++    if (vendor_fn != NULL)
++        return vendor_fn(sem, time_ms);
++    return cedar_sem_timed_wait(sem, time_ms);
++}
++
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms)
++{
++    struct timespec ts;
++    int r;
++
++    atomic_fetch_add_explicit(&n_calls, 1, memory_order_relaxed);
++    if (sem_trywait(sem) == 0)
++        return 0;
++    if (errno != EAGAIN)
++        return -1;
++    if (time_ms < -1 || time_ms == 0)
++        return -1;
++
++    atomic_fetch_add_explicit(&n_blocked, 1, memory_order_relaxed);
++    announce_block();
++
++    if (time_ms == -1) {
++        do
++            r = sem_wait(sem);
++        while (r != 0 && errno == EINTR);
++        return r == 0 ? 0 : -1;
++    }
++
++    /*
++     * Local port: the tg5040 toolchain sysroot is glibc 2.28 and has no
++     * sem_clockwait (2.30+), so the absolute timeout is CLOCK_REALTIME.
++     * The vendor contract is milliseconds, so a clock step matters no more
++     * than it does for the vendor implementation.
++     */
++    clock_gettime(CLOCK_REALTIME, &ts);
++    ts.tv_sec += (time_t)(time_ms / 1000);
++    ts.tv_nsec += (long)(time_ms % 1000) * 1000000L;
++    if (ts.tv_nsec >= 1000000000L) {
++        ts.tv_sec++;
++        ts.tv_nsec -= 1000000000L;
++    }
++    do
++        r = sem_timedwait(sem, &ts);
++    while (r != 0 && errno == EINTR);
++    if (r != 0) {
++        atomic_fetch_add_explicit(&n_timeouts, 1, memory_order_relaxed);
++        return -1;
++    }
++    return 0;
++}
++
++unsigned cedar_sync_seq(void)
++{
++    return atomic_load(&idle_seq);
++}
++
++int cedar_sync_wait(unsigned seq, uint64_t deadline_ns)
++{
++    int changed = 0;
++
++    atomic_fetch_add(&waiters, 1);
++    for (;;) {
++        struct timespec now, rel;
++        uint64_t now_ns;
++
++        if (atomic_load(&idle_seq) != seq) {
++            changed = 1;
++            break;
++        }
++        clock_gettime(CLOCK_MONOTONIC, &now);
++        now_ns = (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
++        if (now_ns >= deadline_ns)
++            break;
++        rel.tv_sec = (time_t)((deadline_ns - now_ns) / 1000000000ull);
++        rel.tv_nsec = (long)((deadline_ns - now_ns) % 1000000000ull);
++        /* Returns at once if idle_seq already moved past seq. */
++        syscall(SYS_futex, &idle_seq, FUTEX_WAIT_PRIVATE, seq, &rel, NULL, 0);
++    }
++    atomic_fetch_sub(&waiters, 1);
++    return changed;
++}
++
++void cedar_sync_stats(struct cedar_sync_stats *out)
++{
++    pthread_once(&mode_once, pick_mode);
++    out->calls = atomic_load(&n_calls);
++    out->blocked = atomic_load(&n_blocked);
++    out->timeouts = atomic_load(&n_timeouts);
++    out->vendor = vendor_fn != NULL;
++}
+diff --git a/src/cedar/cedar_sync.h b/src/cedar/cedar_sync.h
+new file mode 100644
+index 0000000..5397d32
+--- /dev/null
++++ b/src/cedar/cedar_sync.h
+@@ -0,0 +1,51 @@
++/* SPDX-License-Identifier: GPL-3.0-or-later */
++#ifndef MOONLIGHT_TSP_CEDAR_SYNC_H
++#define MOONLIGHT_TSP_CEDAR_SYNC_H
++
++#include <semaphore.h>
++#include <stdint.h>
++
++/*
++ * Blocking replacement for libcdc_base's exported SemTimedWait().
++ *
++ * The vendor version polls sem_trywait() with an exponential usleep()
++ * backoff (10 us doubling up to the timeout), so the SBM parser thread
++ * notices a newly submitted frame only at its next poll, often several ms
++ * later, and wakes hundreds of times per second while idle. The executable
++ * exports its own SemTimedWait (linked with
++ * -Wl,--export-dynamic-symbol=SemTimedWait), which the dynamic linker binds
++ * libsbm.so's and libcdc_base.so's PLT calls to.
++ *
++ * Every time a vendor thread is about to block, a sequence number advances.
++ * For the SBM parser that happens once it has consumed all submitted data,
++ * so a decoder thread can sleep until then instead of polling.
++ *
++ * Set TSP_SEMWAIT=vendor in the environment to forward to the vendor
++ * implementation (A/B testing).
++ */
++
++/*
++ * The interposed wait itself, without the vendor forwarding switch; the
++ * exported SemTimedWait() is a trampoline around it.
++ */
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
++
++/* Current parser-idle sequence number. Take it before submitting. */
++unsigned cedar_sync_seq(void);
++
++/*
++ * Sleeps until the sequence differs from seq or CLOCK_MONOTONIC reaches
++ * deadline_ns. Returns 1 if the sequence changed, 0 on timeout.
++ */
++int cedar_sync_wait(unsigned seq, uint64_t deadline_ns);
++
++struct cedar_sync_stats {
++    unsigned long calls;    /* SemTimedWait calls that reached us */
++    unsigned long blocked;  /* calls that had to sleep */
++    unsigned long timeouts; /* sleeps that ended without the semaphore */
++    int vendor;             /* 1 if forwarding to the vendor version */
++};
++
++void cedar_sync_stats(struct cedar_sync_stats *out);
++
++#endif
+diff --git a/src/cedar/cedarc_abi.h b/src/cedar/cedarc_abi.h
+new file mode 100644
+index 0000000..a4180b5
+--- /dev/null
++++ b/src/cedar/cedarc_abi.h
+@@ -0,0 +1,258 @@
++/*
++ * Minimal ABI declarations for the TrimUI Smart Pro vendor CedarC-v1.3.0
++ * video decoder (/usr/lib/libvdecoder.so and friends).
++ *
++ * Layouts were taken from the DWARF debug information shipped inside the
++ * device's own libvdecoder.so (see scripts/check-cedarc-abi.sh). Only the
++ * fields this program touches are named; the rest are reserved padding.
++ * The vendor libraries are loaded at run time with dlopen(); nothing here
++ * is linked against them.
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#ifndef MOONLIGHT_TSP_CEDARC_ABI_H
++#define MOONLIGHT_TSP_CEDARC_ABI_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++enum {
++    CEDAR_CODEC_H264 = 0x115,
++    CEDAR_CODEC_H265 = 0x116,
++};
++
++enum {
++    CEDAR_PIXEL_DEFAULT = 0x00,
++    CEDAR_PIXEL_YUV_PLANER_420 = 0x01,
++    CEDAR_PIXEL_YV12 = 0x04,
++    CEDAR_PIXEL_NV21 = 0x05,
++    CEDAR_PIXEL_NV12 = 0x06,
++    CEDAR_PIXEL_YUV_MB32_420 = 0x07,
++};
++
++enum {
++    CEDAR_RESULT_UNSUPPORTED = -1,
++    CEDAR_RESULT_OK = 0,
++    CEDAR_RESULT_FRAME_DECODED = 1,
++    CEDAR_RESULT_CONTINUE = 2,
++    CEDAR_RESULT_KEYFRAME_DECODED = 3,
++    CEDAR_RESULT_NO_FRAME_BUFFER = 4,
++    CEDAR_RESULT_NO_BITSTREAM = 5,
++    CEDAR_RESULT_RESOLUTION_CHANGE = 6,
++};
++
++typedef struct CedarVConfig {
++    int32_t bScaleDownEn;                      /* 0x00 */
++    int32_t bRotationEn;                       /* 0x04 */
++    int32_t bSecOutputEn;                      /* 0x08 */
++    int32_t nHorizonScaleDownRatio;            /* 0x0c */
++    int32_t nVerticalScaleDownRatio;           /* 0x10 */
++    int32_t nSDWidth;                          /* 0x14 */
++    int32_t nSDHeight;                         /* 0x18 */
++    int32_t bAnySizeSD;                        /* 0x1c */
++    int32_t nSecHorizonScaleDownRatio;         /* 0x20 */
++    int32_t nSecVerticalScaleDownRatio;        /* 0x24 */
++    int32_t nRotateDegree;                     /* 0x28 */
++    int32_t bThumbnailMode;                    /* 0x2c */
++    int32_t eOutputPixelFormat;                /* 0x30 */
++    int32_t eSecOutputPixelFormat;             /* 0x34 */
++    int32_t bNoBFrames;                        /* 0x38 */
++    int32_t bDisable3D;                        /* 0x3c */
++    int32_t bSupportMaf;                       /* 0x40 */
++    int32_t bDispErrorFrame;                   /* 0x44 */
++    int32_t nVbvBufferSize;                    /* 0x48 */
++    int32_t nFrameBufferNum;                   /* 0x4c */
++    int32_t bSecureosEn;                       /* 0x50 */
++    int32_t bGpuBufValid;                      /* 0x54 */
++    int32_t nAlignStride;                      /* 0x58 */
++    int32_t bIsSoftDecoderFlag;                /* 0x5c */
++    int32_t bVirMallocSbm;                     /* 0x60 */
++    int32_t bSupportPallocBufBeforeDecode;     /* 0x64 */
++    int32_t nDeInterlaceHoldingFrameBufferNum; /* 0x68 */
++    int32_t nDisplayHoldingFrameBufferNum;     /* 0x6c */
++    int32_t nRotateHoldingFrameBufferNum;      /* 0x70 */
++    int32_t nDecodeSmoothFrameBufferNum;       /* 0x74 */
++    int32_t bIsTvStream;                       /* 0x78 */
++    int32_t nLbcLossyComMod;                   /* 0x7c */
++    uint32_t bIsLossy;                         /* 0x80 */
++    uint32_t bRcEn;                            /* 0x84 */
++    void *memops;                              /* 0x88 */
++    int32_t eCtlAfbcMode;                      /* 0x90 */
++    int32_t eCtlIptvMode;                      /* 0x94 */
++    void *veOpsS;                              /* 0x98 */
++    void *pVeOpsSelf;                          /* 0xa0 */
++    int32_t bConvertVp910bitTo8bit;            /* 0xa8 */
++    uint32_t nVeFreq;                          /* 0xac */
++    int32_t bCalledByOmxFlag;                  /* 0xb0 */
++    int32_t bSetProcInfoEnable;                /* 0xb4 */
++    int32_t nSetProcInfoFreq;                  /* 0xb8 */
++    int32_t nChannelNum;                       /* 0xbc */
++    int32_t nSupportMaxWidth;                  /* 0xc0 */
++    int32_t nSupportMaxHeight;                 /* 0xc4 */
++    int32_t commonConfigFlag;                  /* 0xc8 */
++    int32_t bATMFlag;                          /* 0xcc */
++} CedarVConfig;
++
++typedef struct CedarVideoStreamInfo {
++    int32_t eCodecFormat;            /* 0x00 */
++    int32_t nWidth;                  /* 0x04 */
++    int32_t nHeight;                 /* 0x08 */
++    int32_t nFrameRate;              /* 0x0c */
++    int32_t nFrameDuration;          /* 0x10 */
++    int32_t nAspectRatio;            /* 0x14 */
++    int32_t bIs3DStream;             /* 0x18 */
++    int32_t nCodecSpecificDataLen;   /* 0x1c */
++    char *pCodecSpecificData;        /* 0x20 */
++    int32_t bSecureStreamFlag;       /* 0x28 */
++    int32_t bSecureStreamFlagLevel1; /* 0x2c */
++    int32_t bIsFramePackage;         /* 0x30 */
++    int32_t h265ReferencePictureNum; /* 0x34 */
++    int32_t bReOpenEngine;           /* 0x38 */
++    int32_t bIsFrameCtsTestFlag;     /* 0x3c */
++} CedarVideoStreamInfo;
++
++typedef struct CedarVideoStreamDataInfo {
++    char *pData;           /* 0x00 */
++    int32_t nLength;       /* 0x08 */
++    int32_t pad0;
++    int64_t nPts;          /* 0x10 */
++    int64_t nPcr;          /* 0x18 */
++    int32_t bIsFirstPart;  /* 0x20 */
++    int32_t bIsLastPart;   /* 0x24 */
++    int32_t nID;           /* 0x28 */
++    int32_t nStreamIndex;  /* 0x2c */
++    int32_t bValid;        /* 0x30 */
++    uint32_t bVideoInfoFlag; /* 0x34 */
++    void *pVideoInfo;      /* 0x38 */
++} CedarVideoStreamDataInfo;
++
++typedef struct CedarVideoPicture {
++    int32_t nID;            /* 0x00 */
++    int32_t nStreamIndex;   /* 0x04 */
++    int32_t ePixelFormat;   /* 0x08 */
++    int32_t nWidth;         /* 0x0c */
++    int32_t nHeight;        /* 0x10 */
++    int32_t nLineStride;    /* 0x14 */
++    int32_t nTopOffset;     /* 0x18 */
++    int32_t nLeftOffset;    /* 0x1c */
++    int32_t nBottomOffset;  /* 0x20 */
++    int32_t nRightOffset;   /* 0x24 */
++    int32_t nFrameRate;     /* 0x28 */
++    int32_t nAspectRatio;   /* 0x2c */
++    int32_t bIsProgressive; /* 0x30 */
++    int32_t bTopFieldFirst; /* 0x34 */
++    int32_t bRepeatTopField; /* 0x38 */
++    int32_t pad0;
++    int64_t nPts;           /* 0x40 */
++    int64_t nPcr;           /* 0x48 */
++    char *pData0;           /* 0x50 */
++    char *pData1;           /* 0x58 */
++    char *pData2;           /* 0x60 */
++    char *pData3;           /* 0x68 */
++    int32_t bMafValid;      /* 0x70 */
++    int32_t pad1;
++    char *pMafData;         /* 0x78 */
++    int32_t nMafFlagStride; /* 0x80 */
++    int32_t bPreFrmValid;   /* 0x84 */
++    int32_t nBufId;         /* 0x88 */
++    int32_t pad2;
++    uint64_t phyYBufAddr;   /* 0x90 */
++    uint64_t phyCBufAddr;   /* 0x98 */
++    void *pPrivate;         /* 0xa0 */
++    int32_t nBufFd;         /* 0xa8 */
++    int32_t nBufStatus;     /* 0xac */
++    int32_t bTopFieldError; /* 0xb0 */
++    int32_t bBottomFieldError; /* 0xb4 */
++    int32_t nColorPrimary;  /* 0xb8 */
++    int32_t bFrameErrorFlag; /* 0xbc */
++    void *pMetaData;        /* 0xc0 */
++    int32_t video_full_range_flag;    /* 0xc8 */
++    int32_t transfer_characteristics; /* 0xcc */
++    int32_t matrix_coeffs;  /* 0xd0 */
++    uint8_t colour_primaries; /* 0xd4 */
++    uint8_t pad3[3];
++    int32_t nLower2BitBufSize;   /* 0xd8 */
++    int32_t nLower2BitBufOffset; /* 0xdc */
++    int32_t nLower2BitBufStride; /* 0xe0 */
++    int32_t b10BitPicFlag;  /* 0xe4 */
++    int32_t bEnableAfbcFlag; /* 0xe8 */
++    int32_t nLbcLossyComMod; /* 0xec */
++    uint32_t bIsLossy;      /* 0xf0 */
++    uint32_t bRcEn;         /* 0xf4 */
++    int32_t nBufSize;       /* 0xf8 */
++    int32_t nAfbcSize;      /* 0xfc */
++    int32_t nLbcSize;       /* 0x100 */
++    int32_t nDebugCount;    /* 0x104 */
++    uint8_t nCurFrameInfo[72]; /* 0x108 */
++} CedarVideoPicture;
++
++#define CEDAR_ASSERT_OFF(type, field, off) \
++    _Static_assert(offsetof(type, field) == (off), #type "." #field)
++
++CEDAR_ASSERT_OFF(CedarVConfig, bRotationEn, 0x04);
++CEDAR_ASSERT_OFF(CedarVConfig, nRotateDegree, 0x28);
++CEDAR_ASSERT_OFF(CedarVConfig, eOutputPixelFormat, 0x30);
++CEDAR_ASSERT_OFF(CedarVConfig, bNoBFrames, 0x38);
++CEDAR_ASSERT_OFF(CedarVConfig, nVbvBufferSize, 0x48);
++CEDAR_ASSERT_OFF(CedarVConfig, nFrameBufferNum, 0x4c);
++CEDAR_ASSERT_OFF(CedarVConfig, nAlignStride, 0x58);
++CEDAR_ASSERT_OFF(CedarVConfig, nDisplayHoldingFrameBufferNum, 0x6c);
++CEDAR_ASSERT_OFF(CedarVConfig, nRotateHoldingFrameBufferNum, 0x70);
++CEDAR_ASSERT_OFF(CedarVConfig, nDecodeSmoothFrameBufferNum, 0x74);
++CEDAR_ASSERT_OFF(CedarVConfig, memops, 0x88);
++CEDAR_ASSERT_OFF(CedarVConfig, veOpsS, 0x98);
++CEDAR_ASSERT_OFF(CedarVConfig, pVeOpsSelf, 0xa0);
++CEDAR_ASSERT_OFF(CedarVConfig, nVeFreq, 0xac);
++CEDAR_ASSERT_OFF(CedarVConfig, bATMFlag, 0xcc);
++_Static_assert(sizeof(CedarVConfig) == 0xd0, "VConfig size");
++
++CEDAR_ASSERT_OFF(CedarVideoStreamInfo, pCodecSpecificData, 0x20);
++CEDAR_ASSERT_OFF(CedarVideoStreamInfo, bIsFramePackage, 0x30);
++CEDAR_ASSERT_OFF(CedarVideoStreamInfo, bIsFrameCtsTestFlag, 0x3c);
++_Static_assert(sizeof(CedarVideoStreamInfo) == 0x40, "VideoStreamInfo size");
++
++CEDAR_ASSERT_OFF(CedarVideoStreamDataInfo, nLength, 0x08);
++CEDAR_ASSERT_OFF(CedarVideoStreamDataInfo, nPts, 0x10);
++CEDAR_ASSERT_OFF(CedarVideoStreamDataInfo, bIsFirstPart, 0x20);
++CEDAR_ASSERT_OFF(CedarVideoStreamDataInfo, bValid, 0x30);
++CEDAR_ASSERT_OFF(CedarVideoStreamDataInfo, pVideoInfo, 0x38);
++_Static_assert(sizeof(CedarVideoStreamDataInfo) == 0x40, "VideoStreamDataInfo size");
++
++CEDAR_ASSERT_OFF(CedarVideoPicture, nLineStride, 0x14);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nRightOffset, 0x24);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nPts, 0x40);
++CEDAR_ASSERT_OFF(CedarVideoPicture, pData0, 0x50);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nBufId, 0x88);
++CEDAR_ASSERT_OFF(CedarVideoPicture, phyYBufAddr, 0x90);
++CEDAR_ASSERT_OFF(CedarVideoPicture, phyCBufAddr, 0x98);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nBufFd, 0xa8);
++CEDAR_ASSERT_OFF(CedarVideoPicture, bFrameErrorFlag, 0xbc);
++CEDAR_ASSERT_OFF(CedarVideoPicture, video_full_range_flag, 0xc8);
++CEDAR_ASSERT_OFF(CedarVideoPicture, colour_primaries, 0xd4);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nBufSize, 0xf8);
++CEDAR_ASSERT_OFF(CedarVideoPicture, nCurFrameInfo, 0x108);
++_Static_assert(sizeof(CedarVideoPicture) == 0x150, "VideoPicture size");
++
++typedef void CedarDecoder;
++
++typedef CedarDecoder *(*cedar_create_fn)(void);
++typedef void (*cedar_destroy_fn)(CedarDecoder *);
++typedef int (*cedar_initialize_fn)(CedarDecoder *, CedarVideoStreamInfo *,
++                                   CedarVConfig *);
++typedef void (*cedar_reset_fn)(CedarDecoder *);
++typedef int (*cedar_decode_fn)(CedarDecoder *, int end_of_stream,
++                               int keyframe_only, int drop_b_if_late,
++                               int64_t now_us);
++typedef int (*cedar_request_stream_fn)(CedarDecoder *, int size, char **buf,
++                                       int *buf_size, char **ring_buf,
++                                       int *ring_size, int stream_index);
++typedef int (*cedar_submit_stream_fn)(CedarDecoder *,
++                                      CedarVideoStreamDataInfo *,
++                                      int stream_index);
++typedef CedarVideoPicture *(*cedar_request_picture_fn)(CedarDecoder *,
++                                                       int stream_index);
++typedef int (*cedar_return_picture_fn)(CedarDecoder *, CedarVideoPicture *);
++typedef int (*cedar_count_fn)(CedarDecoder *, int stream_index);
++typedef void (*cedar_add_plugin_fn)(char *path);
++
++#endif
+diff --git a/src/main.c b/src/main.c
+index ac21082..6cc6ead 100644
+--- a/src/main.c
++++ b/src/main.c
+@@ -310,6 +310,8 @@ int main(int argc, char* argv[]) {
+     enum platform system = platform_check(config.platform);
+     if (config.debug_level > 0)
+       printf("Platform %s\n", platform_name(system));
++    if (system == SDL && getenv("MOONLIGHT_HWDEC") != NULL)
++      printf("Hardware decode: MOONLIGHT_HWDEC=%s\n", getenv("MOONLIGHT_HWDEC"));
+ 
+     if (system == 0) {
+       fprintf(stderr, "Platform '%s' not found\n", config.platform);
+diff --git a/src/video/cedar_sdl.c b/src/video/cedar_sdl.c
+new file mode 100644
+index 0000000..a861323
+--- /dev/null
++++ b/src/video/cedar_sdl.c
+@@ -0,0 +1,503 @@
++/*
++ * Cedar hardware decode for the SDL backend.
++ *
++ * This file is part of Moonlight Embedded.
++ *
++ * Ported from isalin/moonlight-tsp src/video_cedar.c (GPL-3.0-or-later,
++ * same Allwinner A133P chip). tsp renders straight into a disp2 video layer;
++ * here the decoded picture is converted to YV12 for sdl.c's texture instead,
++ * so the engine keeps owning the framebuffer. The decode loop, the picture
++ * accounting and the decoder rebuild follow tsp.
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++
++#include "cedar_sdl.h"
++
++#include "../cedar/cedar.h"
++#include "../cedar/cedar_sync.h"
++
++#include <Limelight.h>
++
++#include <pthread.h>
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <time.h>
++#include <unistd.h>
++
++/* How long to wait for the SBM parser to split a submitted frame. */
++#define PARSE_WAIT_NS 10000000ull
++
++/* Rebuild the decoder after this many frames without a picture. */
++#define STALL_FRAMES 30
++
++#define PTS_STEP 16667
++
++/*
++ * Interval statistics (every 5 s: frames/pictures/errors/submit) and the
++ * one-off semwait line are development output, off unless MOONLIGHT_DEBUG=1.
++ * The one-time banner and every error line stay on: they cost nothing per
++ * frame and they are what a bug report needs.
++ */
++static int debug_on(void) {
++  static int on = -1;
++
++  if (on < 0) {
++    const char* v = getenv("MOONLIGHT_DEBUG");
++    on = v != NULL && v[0] == '1' && v[1] == '\0';
++  }
++  return on;
++}
++
++static const unsigned char aud_h265[] = { 0, 0, 0, 1, 0x46, 0x01, 0x50 };
++
++struct segs {
++  struct cedar_segment* v;
++  int n, cap;
++};
++
++static struct {
++  struct cedar_config cfg;
++  struct cedar_decoder* dec;
++  unsigned char pps[256];   /* H.264: latest PPS, closes each frame */
++  size_t pps_len;
++  struct segs segs;
++  unsigned long no_picture_run;
++  int pending_frames;       /* submitted frames not yet decoded */
++  uint64_t receive_ms;      /* receive time of the frame being decoded */
++  int logged;               /* one-off reports already made */
++  int format_warned;
++
++  /*
++   * YV12 planes handed to sdl.c's frame event; sized at init. The decoder
++   * picture waits in `pending` until cedar_sdl_frame() converts it, which
++   * sdl.c does while holding the SDL mutex, so the conversion can never
++   * rewrite the buffer the texture upload is reading.
++   */
++  unsigned char* planes[3];
++  int linesize[3];
++  CedarVideoPicture* pending;  /* decoded, not yet converted for sdl.c */
++
++  /* Interval statistics, printed by cedar_sdl_dump_stats. */
++  unsigned long frames, pictures, errors, recreated;
++  double total_ms;
++  double total_max_ms;
++  uint64_t last_report_ns;
++} C;
++
++static uint64_t now_ns(void) {
++  struct timespec ts;
++
++  clock_gettime(CLOCK_MONOTONIC, &ts);
++  return (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
++}
++
++int cedar_sdl_available(void) {
++  char err[160] = "";
++
++  if (cedar_load(err, sizeof(err)) != 0) {
++    fprintf(stderr, "cedar: %s\n", err);
++    return 0;
++  }
++  return cedar_has_codec(CEDAR_CODEC_H264) || cedar_has_codec(CEDAR_CODEC_H265);
++}
++
++int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, size_t errlen) {
++  memset(&C.cfg, 0, sizeof(C.cfg));
++  /* Never leave a caller printing uninitialised memory on a failure path. */
++  if (err != NULL && errlen > 0)
++    err[0] = '\0';
++  if (video_format & VIDEO_FORMAT_MASK_H264)
++    C.cfg.codec = CEDAR_CODEC_H264;
++  else if (video_format & VIDEO_FORMAT_MASK_H265)
++    C.cfg.codec = CEDAR_CODEC_H265;
++  else {
++    snprintf(err, errlen, "format %#x is not H.264 or HEVC", video_format);
++    return -1;
++  }
++  /* cedar_load returns 0 on success, -1 with a message in err. */
++  if (cedar_load(err, errlen) != 0)
++    return -1;
++  if (!cedar_has_codec(C.cfg.codec)) {
++    snprintf(err, errlen, "no Cedar plugin for %s",
++             C.cfg.codec == CEDAR_CODEC_H265 ? "HEVC" : "H.264");
++    return -1;
++  }
++
++  C.cfg.width = width;
++  C.cfg.height = height;
++  C.cfg.fps = fps > 0 ? fps : 60;
++  C.cfg.pixel_format = CEDAR_PIXEL_NV21;
++  /*
++   * One picture the display may hold and none for smoothing: every frame is
++   * converted and released at once, so a deeper queue would only add latency.
++   */
++  C.cfg.display_hold = 1;
++  C.cfg.smooth = 0;
++  C.cfg.vbv_bytes = 4 << 20;
++  C.pps_len = 0;
++  C.pending = NULL;   /* the decoder that owned it is gone */
++  C.no_picture_run = 0;
++  C.logged = 0;
++  C.format_warned = 0;
++  memset(&C.segs, 0, sizeof(C.segs));
++
++  C.dec = cedar_open(&C.cfg, err, errlen);
++  if (C.dec == NULL)
++    return -1;
++
++  /* One YV12 allocation for the whole stream, as ffmpeg.c keeps its frames. */
++  C.planes[0] = malloc((size_t)width * height * 3 / 2);
++  if (C.planes[0] == NULL) {
++    cedar_close(C.dec);
++    C.dec = NULL;
++    snprintf(err, errlen, "out of memory for the YV12 planes");
++    return -1;
++  }
++  C.planes[1] = C.planes[0] + (size_t)width * height;
++  C.planes[2] = C.planes[1] + (size_t)width * height / 4;
++  C.linesize[0] = width;
++  C.linesize[1] = width / 2;
++  C.linesize[2] = width / 2;
++  C.pending = NULL;
++
++  printf("cedar: %s %dx%d@%d, NV21 -> YV12\n",
++         C.cfg.codec == CEDAR_CODEC_H265 ? "HEVC" : "H.264", width, height, C.cfg.fps);
++  fflush(stdout);
++  return 0;
++}
++
++void cedar_sdl_destroy(void) {
++  cedar_close(C.dec);
++  C.dec = NULL;
++  free(C.planes[0]);
++  C.planes[0] = NULL;
++  C.pending = NULL;
++  free(C.segs.v);
++  memset(&C.segs, 0, sizeof(C.segs));
++}
++
++static int segs_add(struct segs* s, const void* data, size_t len) {
++  if (s->n == s->cap) {
++    int cap = s->cap ? s->cap * 2 : 16;
++    struct cedar_segment* v = realloc(s->v, (size_t)cap * sizeof(*v));
++
++    if (v == NULL)
++      return -1;
++    s->v = v;
++    s->cap = cap;
++  }
++  s->v[s->n].data = data;
++  s->v[s->n].len = len;
++  s->n++;
++  return 0;
++}
++
++static int open_decoder(void) {
++  char err[160] = "";
++
++  C.dec = cedar_open(&C.cfg, err, sizeof(err));
++  if (C.dec == NULL) {
++    fprintf(stderr, "cedar: %s\n", err);
++    return -1;
++  }
++  return 0;
++}
++
++static int rebuild_decoder(void) {
++  /* Pictures belong to the decoder that produced them; close releases them. */
++  cedar_close(C.dec);
++  C.dec = NULL;
++  C.pending = NULL;
++  C.recreated++;
++  fprintf(stderr, "cedar: rebuilding decoder\n");
++  return open_decoder();
++}
++
++/* Visible rectangle of a picture: the crop if the decoder reports one. */
++static void picture_rect(const CedarVideoPicture* p, int* x, int* y, int* w, int* h) {
++  *x = 0;
++  *y = 0;
++  *w = p->nWidth;
++  *h = p->nHeight;
++  if (p->nRightOffset > p->nLeftOffset && p->nBottomOffset > p->nTopOffset) {
++    *x = p->nLeftOffset;
++    *y = p->nTopOffset;
++    *w = p->nRightOffset - p->nLeftOffset;
++    *h = p->nBottomOffset - p->nTopOffset;
++  }
++}
++
++/*
++ * Copies the visible picture into YV12: luma rows, then the interleaved
++ * chroma plane split into U and V (NV12 has U first, NV21 V first).
++ */
++int cedar_sdl_convert(const CedarVideoPicture* p, unsigned char* y, unsigned char* u,
++                      unsigned char* v, int y_stride, int u_stride, int v_stride) {
++  const unsigned char* src_y;
++  const unsigned char* src_c;
++  unsigned stride;
++  int x, top, w, h, row, col;
++  int nv21;
++
++  if (p->ePixelFormat == CEDAR_PIXEL_NV21)
++    nv21 = 1;
++  else if (p->ePixelFormat == CEDAR_PIXEL_NV12)
++    nv21 = 0;
++  else
++    return -1;
++  if (p->pData0 == NULL || p->pData1 == NULL || p->nLineStride <= 0)
++    return -1;
++
++  src_y = (const unsigned char*)p->pData0;
++  src_c = (const unsigned char*)p->pData1;
++  stride = (unsigned)p->nLineStride;
++  picture_rect(p, &x, &top, &w, &h);
++
++  for (row = 0; row < h; row++)
++    memcpy(y + (size_t)row * y_stride, src_y + (size_t)(top + row) * stride + x, (size_t)w);
++
++  for (row = 0; row < h / 2; row++) {
++    const unsigned char* s = src_c + (size_t)(top / 2 + row) * stride + (x & ~1);
++    unsigned char* du = u + (size_t)row * u_stride;
++    unsigned char* dv = v + (size_t)row * v_stride;
++
++    for (col = 0; col < w / 2; col++) {
++      unsigned char a = s[2 * col], b = s[2 * col + 1];
++
++      du[col] = nv21 ? b : a;
++      dv[col] = nv21 ? a : b;
++    }
++  }
++  return 0;
++}
++
++/* One interval of decode latency, printed by cedar_sdl_dump_stats. */
++static void stats_add(double total_ms) {
++  if (!debug_on())
++    return;
++  C.total_ms += total_ms;
++  if (total_ms > C.total_max_ms)
++    C.total_max_ms = total_ms;
++  if (C.last_report_ns == 0)
++    C.last_report_ns = now_ns();
++  else if (now_ns() - C.last_report_ns >= 5000000000ull) {
++    cedar_sdl_dump_stats();
++    C.last_report_ns = now_ns();
++  }
++}
++
++static void log_semwait(void) {
++  struct cedar_sync_stats ss;
++
++  if (!debug_on())
++    return;
++
++  cedar_sync_stats(&ss);
++  printf("cedar: semwait %s calls=%lu blocked=%lu\n",
++         ss.vendor ? "vendor" : ss.calls ? "interposed" : "NOT interposed",
++         ss.calls, ss.blocked);
++  fflush(stdout);
++}
++
++/*
++ * Takes the newest decoded picture, converts it into the YV12 planes and
++ * returns it to the decoder. Called from cedar_sdl_submit() right after the
++ * decode loop; sdl.c then pushes the frame event.
++ */
++static void take_pictures(void) {
++  CedarVideoPicture* pic, *latest = NULL;
++  int errors = 0;
++
++  while ((pic = cedar_request_picture(C.dec)) != NULL) {
++    if (pic->bFrameErrorFlag)
++      errors++;
++    if (latest != NULL)
++      cedar_return_picture(C.dec, latest);
++    latest = pic;
++    C.pictures++;
++  }
++  C.errors += (unsigned long)errors;
++  if (latest == NULL) {
++    C.no_picture_run++;
++    return;
++  }
++  C.no_picture_run = 0;
++
++  if (latest->nWidth > C.cfg.width || latest->nHeight > C.cfg.height) {
++    /* The stream grew: let the rebuild path below take over. */
++    cedar_return_picture(C.dec, latest);
++    C.no_picture_run = STALL_FRAMES;
++    return;
++  }
++
++  /* A picture the presenter never took is stale: drop it, show the newest. */
++  if (C.pending != NULL)
++    cedar_return_picture(C.dec, C.pending);
++  C.pending = latest;
++}
++
++int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]) {
++  if (C.pending == NULL)
++    return 0;
++
++  if (cedar_sdl_convert(C.pending, C.planes[0], C.planes[1], C.planes[2],
++                        C.linesize[0], C.linesize[1], C.linesize[2]) != 0) {
++    if (!C.format_warned) {
++      fprintf(stderr, "cedar: picture format %d cannot be converted\n",
++              C.pending->ePixelFormat);
++      C.format_warned = 1;
++    }
++    C.errors++;
++    cedar_return_picture(C.dec, C.pending);
++    C.pending = NULL;
++    return 0;
++  }
++  cedar_return_picture(C.dec, C.pending);
++  C.pending = NULL;
++
++  /* Same shape as AVFrame.data/linesize, which sdl.c already passes on. */
++  memcpy(planes, C.planes, sizeof(C.planes));
++  memcpy(linesize, C.linesize, sizeof(C.linesize));
++  return 1;
++}
++
++uint64_t cedar_sdl_receive_ms(void) {
++  return C.receive_ms;
++}
++
++void cedar_sdl_dump_stats(void) {
++  unsigned long n = C.frames;
++
++  if (!debug_on())
++    return;
++
++  if (n == 0)
++    return;
++  printf("cedar: frames=%lu pictures=%lu errors=%lu recreated=%lu "
++         "submit=%.2fms max=%.2fms\n",
++         n, C.pictures, C.errors, C.recreated, C.total_ms / (double)n,
++         C.total_max_ms);
++  fflush(stdout);
++  C.frames = C.pictures = C.errors = C.recreated = 0;
++  C.total_ms = C.total_max_ms = 0;
++}
++
++/* Called by sdl_submit_decode_unit (src/video/sdl.c) for every decode unit. */
++int cedar_sdl_submit(PDECODE_UNIT du) {
++  PLENTRY e;
++  int64_t pts = (int64_t)du->frameNumber * PTS_STEP;
++  uint64_t t_submit, deadline;
++  unsigned seq;
++  int ret = CEDAR_RESULT_OK, tries, parsed = 0, errors = 0;
++
++  if (C.dec == NULL && open_decoder() != 0)
++    return DR_NEED_IDR;
++
++  C.segs.n = 0;
++  for (e = du->bufferList; e != NULL; e = e->next) {
++    if (e->bufferType == BUFFER_TYPE_PPS && C.cfg.codec == CEDAR_CODEC_H264 &&
++        (size_t)e->length <= sizeof(C.pps)) {
++      memcpy(C.pps, e->data, (size_t)e->length);
++      C.pps_len = (size_t)e->length;
++    }
++    if (segs_add(&C.segs, e->data, (size_t)e->length) != 0)
++      return DR_NEED_IDR;
++  }
++  /*
++   * The SBM parser closes a frame only when the next one starts. A trailing
++   * PPS (H.264) or AUD (HEVC) closes it at once.
++   */
++  if (C.cfg.codec == CEDAR_CODEC_H265)
++    segs_add(&C.segs, aud_h265, sizeof(aud_h265));
++  else if (C.pps_len > 0)
++    segs_add(&C.segs, C.pps, C.pps_len);
++
++  /*
++   * Receive time for the latency report, in LiGetMillis()'s epoch. The
++   * field is receiveTimeMs in the engine's moonlight-common-c and
++   * receiveTimeUs (microseconds) in newer moonlight-common-c.
++   */
++#ifdef MOONLIGHT_RECEIVE_TIME_US
++  C.receive_ms = (uint64_t)(du->receiveTimeUs / 1000);
++#else
++  C.receive_ms = du->receiveTimeMs;
++#endif
++  seq = cedar_sync_seq();
++  t_submit = now_ns();
++  if (cedar_submit(C.dec, C.segs.v, C.segs.n, pts) != 0) {
++    /* Stream buffer full or broken: start over from an IDR frame. */
++    fprintf(stderr, "cedar: submit failed (%d bytes)\n", du->fullLength);
++    cedar_reset(C.dec);
++    C.pending_frames = 0;
++    return DR_NEED_IDR;
++  }
++  /*
++   * Picture PTS values are rewritten by the decoder, so count instead: every
++   * decoded result finishes the oldest submitted frame, and ours is done when
++   * none is left. A frame the decoder dropped would leave the count high, so
++   * it is capped.
++   */
++  if (C.pending_frames < 2)
++    C.pending_frames++;
++  deadline = t_submit + PARSE_WAIT_NS;
++
++  for (tries = 0; tries < 32; tries++) {
++    if (!parsed) {
++      /* Sleep until the parser has consumed the submission. */
++      parsed = cedar_sync_wait(seq, deadline);
++      seq = cedar_sync_seq();
++    }
++    ret = cedar_decode(C.dec);
++    if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED) {
++      if (C.pending_frames > 0)
++        C.pending_frames--;
++      if (C.pending_frames == 0)
++        break;
++      continue;   /* an older frame: keep going for ours */
++    }
++    if (ret == CEDAR_RESULT_NO_BITSTREAM) {
++      if (now_ns() < deadline) {
++        parsed = 0;
++        continue;
++      }
++      break;
++    }
++    if (ret == CEDAR_RESULT_CONTINUE || ret == CEDAR_RESULT_OK)
++      continue;
++    if (ret == CEDAR_RESULT_NO_FRAME_BUFFER) {
++      /* We hold no pictures, so this is transient. */
++      usleep(1000);
++      continue;
++    }
++    errors++;
++    break;
++  }
++  if (C.pending_frames > 0)
++    errors++;   /* the frame did not finish in time */
++
++  if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED)
++    take_pictures();
++
++  if (ret == CEDAR_RESULT_RESOLUTION_CHANGE || C.no_picture_run >= STALL_FRAMES) {
++    C.no_picture_run = 0;
++    if (rebuild_decoder() != 0)
++      fprintf(stderr, "cedar: decoder rebuild failed\n");
++    errors++;
++  }
++
++  /* Interval statistics; the same line shape as the spike's report. */
++  if (debug_on())
++    stats_add((double)(now_ns() - t_submit) / 1e6);
++  C.frames++;
++  C.errors += (unsigned long)errors;
++  if (debug_on() && C.logged == 0 && C.frames >= 240) {
++    log_semwait();
++    C.logged = 1;
++  }
++
++  if (errors > 0)
++    return DR_NEED_IDR;
++  return DR_OK;
++}
+diff --git a/src/video/cedar_sdl.h b/src/video/cedar_sdl.h
+new file mode 100644
+index 0000000..cf66bc3
+--- /dev/null
++++ b/src/video/cedar_sdl.h
+@@ -0,0 +1,58 @@
++/*
++ * Cedar hardware decode feeding the SDL YV12 texture.
++ *
++ * Ported from isalin/moonlight-tsp src/video_cedar.c (GPL-3.0-or-later);
++ * the display half (disp2 layer, G2D rotation, ION ring) is not used: the
++ * engine keeps its own SDL framebuffer path, so decoded NV21 pictures are
++ * converted to YV12 in CPU and handed to sdl.c's frame event.
++ *
++ * SPDX-License-Identifier: GPL-3.0-or-later
++ */
++#ifndef MOONLIGHT_CEDAR_SDL_H
++#define MOONLIGHT_CEDAR_SDL_H
++
++#include <stddef.h>
++#include <stdint.h>
++
++#include <Limelight.h>
++
++#include "../cedar/cedarc_abi.h"
++
++/* 1 when the vendor decoder libraries exist; 0 on a firmware without them. */
++int cedar_sdl_available(void);
++
++/*
++ * Opens the decoder. video_format is common-c's negotiated format, width and
++ * height the requested stream size. Returns 0, or -1 with a message in err.
++ */
++int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, size_t errlen);
++
++void cedar_sdl_destroy(void);
++
++/*
++ * Converts a decoded picture to YV12 (luma, then U and V). The picture's
++ * visible rectangle is copied, interleaved chroma is deinterleaved (NV21 V
++ * first, NV12 U first). Exposed for the host test.
++ */
++int cedar_sdl_convert(const CedarVideoPicture* pic, unsigned char* y, unsigned char* u,
++                      unsigned char* v, int y_stride, int u_stride, int v_stride);
++
++/* Submits one decode unit to the decoder; DR_OK or DR_NEED_IDR. */
++int cedar_sdl_submit(PDECODE_UNIT du);
++
++/*
++ * Returns the YV12 planes of the last decoded picture, once per picture, in
++ * the same shape as AVFrame.data/linesize so sdl.c can push its frame event.
++ * 1 if a frame is ready, 0 otherwise.
++ */
++int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]);
++
++/*
++ * Receive time (LiGetMillis) of the decode unit behind the frame last handed
++ * out by cedar_sdl_frame(), for the latency report in src/sdl.c.
++ */
++uint64_t cedar_sdl_receive_ms(void);
++
++void cedar_sdl_dump_stats(void);
++
++#endif
+diff --git a/src/video/sdl.c b/src/video/sdl.c
+index e252c2c..7c20dd7 100644
+--- a/src/video/sdl.c
++++ b/src/video/sdl.c
+@@ -19,6 +19,7 @@
+ 
+ #include "video.h"
+ #include "ffmpeg.h"
++#include "cedar_sdl.h"
+ 
+ #include "../sdl.h"
+ #include "../util.h"
+@@ -28,13 +29,35 @@
+ 
+ #include <unistd.h>
+ #include <stdbool.h>
++#include <stdlib.h>
+ 
+ #define SLICES_PER_FRAME 4
+ 
+ static void* ffmpeg_buffer;
+ static size_t ffmpeg_buffer_size;
+ 
++/*
++ * MOONLIGHT_HWDEC=1 decodes with the device's Cedar VPU (tg5040). Anything
++ * else, or a firmware without the vendor libraries, uses FFmpeg.
++ */
++static bool hwdec;
++
+ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
++  const char* value = getenv("MOONLIGHT_HWDEC");
++
++  hwdec = false;
++  if (value != NULL && strcmp(value, "1") == 0) {
++    char err[160];
++
++    if (!cedar_sdl_available())
++      fprintf(stderr, "Cedar decoder unavailable, using FFmpeg\n");
++    else if (cedar_sdl_init(videoFormat, width, height, redrawRate, err, sizeof(err)) == 0) {
++      hwdec = true;
++      return 0;
++    } else
++      fprintf(stderr, "Cedar decoder failed (%s), using FFmpeg\n", err);
++  }
++
+   if (ffmpeg_init(videoFormat, width, height, SLICE_THREADING, SDL_BUFFER_FRAMES, SLICES_PER_FRAME) < 0) {
+     fprintf(stderr, "Couldn't initialize video decoding\n");
+     return -1;
+@@ -46,6 +69,11 @@ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, voi
+ }
+ 
+ static void sdl_cleanup() {
++  if (hwdec) {
++    cedar_sdl_dump_stats();
++    cedar_sdl_destroy();
++    return;
++  }
+   ffmpeg_destroy();
+ }
+ 
+@@ -53,6 +81,36 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+   PLENTRY entry = decodeUnit->bufferList;
+   int length = 0;
+ 
++  /* YV12 planes for the decoded picture, passed to the frame event below. */
++  static unsigned char* cedar_planes[3];
++  static int cedar_linesize[3];
++
++  if (hwdec) {
++    int status = cedar_sdl_submit(decodeUnit);
++
++    /*
++     * Convert under the SDL mutex: the conversion writes the buffer the
++     * texture upload reads on the main thread. The event then carries what
++     * the FFmpeg path carries -- data1 the plane pointers, data2 their
++     * linesizes -- because that is what sdl_loop() hands to
++     * SDL_UpdateYUVTexture.
++     */
++    SDL_LockMutex(mutex);
++    if (cedar_sdl_frame(cedar_planes, cedar_linesize)) {
++      sdlNextFrame++;
++
++      SDL_Event event;
++      event.type = SDL_USEREVENT;
++      event.user.code = SDL_CODE_FRAME;
++      event.user.data1 = cedar_planes;
++      event.user.data2 = cedar_linesize;
++      sdl_latency_receive(cedar_sdl_receive_ms());
++      SDL_PushEvent(&event);
++    }
++    SDL_UnlockMutex(mutex);
++    return status;
++  }
++
+   sdl_latency_receive(decodeUnit->receiveTimeMs);
+ 
+   ensure_buf_size(&ffmpeg_buffer, &ffmpeg_buffer_size, decodeUnit->fullLength + AV_INPUT_BUFFER_PADDING_SIZE);

@@ -1,0 +1,24 @@
+SDL video backend: present every decoded frame (latency buffer 2 -> 1)
+
+SDL_BUFFER_FRAMES is how many frames may be in flight between the decode
+callback and SDL_RenderPresent. At 2 the SDL loop skips a frame whenever the
+previous one has not been presented yet, which costs up to one frame interval
+(~16.7 ms at 60 fps) of added client latency. The constant feeds ffmpeg_init's
+frame ring (src/video/sdl.c) and the skip check in sdl_loop (src/sdl.c), so
+changing it here changes both.
+
+Applies to moonlight-embedded 274d3db34da764344a7a402ee74e6080350ac0cd.
+
+diff --git a/src/sdl.h b/src/sdl.h
+index 65345ba..883431c 100644
+--- a/src/sdl.h
++++ b/src/sdl.h
+@@ -31,7 +31,7 @@
+ 
+ #define SDL_CODE_FRAME 0
+ 
+-#define SDL_BUFFER_FRAMES 2
++#define SDL_BUFFER_FRAMES 1
+ 
+ void sdl_init(int width, int height, bool fullscreen);
+ void sdl_loop();

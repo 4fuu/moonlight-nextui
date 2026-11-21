@@ -13,6 +13,7 @@ file records provenance and licenses for every piece.
 | nextui-app-sdk | `third_party/nextui-app-sdk` submodule, linked into the wrapper | MIT | <https://github.com/4fuu/nextui-app-sdk> at `27e5597` (client 1.0.0, protocol 1) |
 | NextUI full-fidelity overlay renderer (vendored) | `third_party/nextui-overlay/vendor/` | PolyForm Noncommercial 1.0.0 | <https://github.com/4fuu/NextUI> at `2cc6eaf` |
 | moonlight-embedded engine and GameStream libs | `engine/bin/moonlight`, `engine/bin/libs/libgamestream.so.4`, `libmoonlight-common.so.4` | GPL-3.0 | spruce 2.7.0 build; see below |
+| Cedar hardware decoder port (engine `src/cedar/`, `src/video/cedar_sdl.c`; spike `engine/cedar-hwdec/`) | patch and sources | GPL-3.0-or-later | <https://github.com/isalin/moonlight-tsp> at `b36a39c` |
 | Bundled runtime libraries (35 files) | `engine/bin/libs/` | per-library, see below | spruceOS + Ubuntu 20.04 focal arm64 |
 
 The pak also ships `licenses/` inside the archive with the wrapper MIT text,
@@ -63,8 +64,11 @@ Local changes to the snapshot (kept to a minimum so it can be refreshed):
 
 ## Streaming engine
 
-The engine is **not rebuilt here**. `engine/bin/` is copied unmodified from
-spruceOS's shipped Moonlight app:
+The engine in `engine/bin/` is rebuilt from source by
+`.github/workflows/engine.yml` (moonlight-embedded `274d3db3` plus the patches
+in `engine/patches/`: one-frame buffer, latency trace, and the Cedar hardware
+decoder described below). The build follows spruce's recipe:
+
 
 - `spruceUI/spruceOS` `Development`, `App/Moonlight/ports/moonlightnew/moonlight/`
   (binary `moonlight` and its `libs/` closure).
@@ -75,8 +79,22 @@ spruceOS's shipped Moonlight app:
   recipe: <https://github.com/spruceUI/Moonlight-spruce/blob/main/build.sh>.
 - Corresponding source: <https://github.com/moonlight-stream/moonlight-embedded>
   at the commit above, plus the build inputs named by that script.
-- `engine/SHA256SUMS` records every bundled binary. No file in `engine/` is
-  modified by this repository.
+- `engine/SHA256SUMS` records every bundled binary. The engine build writes
+  `manifest.txt` naming the files it replaces and their new hashes; the
+  corresponding source is moonlight-embedded at that commit plus the patches
+  in this repository.
+
+### Cedar hardware decode
+
+`docs/cedar-hwdec.md` describes the optional hardware path for tg5040. The
+developer of this port did not write the decoder: `engine/cedar-hwdec/src/cedar/`
+(`cedar.c`, `cedar_sync.c`, `cedarc_abi.h`) and the decode loop of
+`src/video/cedar_sdl.c` are ported from **isalin/moonlight-tsp** at `b36a39c`,
+which is GPL-3.0-or-later (same chip, TrimUI Smart Pro). Each ported file keeps
+its upstream SPDX header, and the changes made here are listed in
+`docs/cedar-hwdec.md`. The spike tool (`engine/cedar-hwdec/tools/tsp-videotest.c`)
+and its display/G2D helpers are from the same source and are not part of the
+shipped pak.
 
 The wrapper executes the engine as a separate process through the PATH shim
 (`shim/moonlight`). GPL-3.0 applies to the engine and its GameStream libraries;
