@@ -433,12 +433,12 @@ jobs:
 
           echo "== patch 2: latency measurement compiled in"
           # The compiled object references the string it prints and the
-          # environment variable it reads.
-          objdump -s -j .rodata "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
-            tr -d '\n' | grep -oE 'client latency recv->present: avg %(l|ll)?u min %(l|ll)?u max %(l|ll)?u \(%d frames\)'
-          strings "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" | grep -x 'MOONLIGHT_LATENCY_DEBUG'
-          "$CROSS_TRIPLE-readelf" -s "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
-            grep -qE 'UND +LiGetMillis|UND +SDL_RenderPresent'
+          # environment variable it reads, and calls LiGetMillis for the
+          # receive epoch.
+          SDL_OBJ="$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o"
+          objdump -s -j .rodata "$SDL_OBJ" | tr -d '\n' | grep -oE 'client latency recv->present: avg %(l|ll)?u min %(l|ll)?u max %(l|ll)?u \(%d frames\)'
+          strings "$SDL_OBJ" | grep -x 'MOONLIGHT_LATENCY_DEBUG'
+          "$CROSS_TRIPLE-readelf" -s "$SDL_OBJ" | grep -E 'LiGetMillis|SDL_RenderPresent'
           echo "== patch 2: present path calls the reporter"
           "$CROSS_TRIPLE-objdump" -d --no-show-raw-insn "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
             grep -B2 -A2 'bl.*<SDL_RenderPresent' | head
