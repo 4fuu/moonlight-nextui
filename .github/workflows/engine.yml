@@ -309,14 +309,14 @@ jobs:
 
       - name: Provide pulse-simple for the build
         run: |
-          set -ex
-          echo "pulse step start"
+          set -e
           # The vendor sysroot has no PulseAudio headers either, and spruce
           # builds with libpulse-dev:arm64. Mirror that package's public
           # headers and libpulse-simple.pc, and link against the aarch64
           # PulseAudio 13.99 libraries the pak already bundles.
           PULSE_VER=13.99.1
           PULSE_URL="https://gitlab.freedesktop.org/pulseaudio/pulseaudio/-/raw/v$PULSE_VER/src"
+          mkdir -p "$PREFIX/include/pulse" "$PREFIX/lib/pkgconfig"
           # The public headers of the release the bundled libraries come
           # from, minus version.h, which meson generates from version.h.in.
           for h in cdecl channelmap client-conf-x11 client-conf context def direction \
