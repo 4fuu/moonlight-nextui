@@ -1,0 +1,69 @@
+# moonlight-embedded engine for tg5040
+moonlight-embedded: 274d3db34da764344a7a402ee74e6080350ac0cd (2.7.0)
+openssl: 3.3.1  curl: 8.7.1  ffmpeg: 4.4.5
+toolchain: gcc 8.3.0 aarch64-nextui-linux-gnu, glibc 2.28 sysroot, SDL2 2.26.1 headers
+workflow: https://github.com/4fuu/moonlight-nextui/actions/runs/44935456713
+
+## Replacement mapping (artifact -> pak path)
+moonlight -> bin/moonlight
+libs/* -> bin/libs/*
+
+## Files
+d9e499c2a7f078c3d449cbe0c2f1ba0a6d4ffefb820fde1235a60fee5416d72a  bin/moonlight
+619ba379bbb93b76d5d164f3d670afb896d8b9b92385fbf47e7a6c794a721734  bin/libs/libavahi-client.so.3
+cbc2be813172f9b57c5a1efb57af4e548cf922965ca692d086981285161e131a  bin/libs/libavahi-common.so.3
+13a992bdf2d641319f8829c86d5700b0e7d048bd7a10c305310ac5c413499311  bin/libs/libavcodec.so.58
+7b16f1fa9c53ed675e0fe6b44d91f495d2d85774cd48615cbec6692b79731f45  bin/libs/libavutil.so.56
+064f8de0222409393ed2728d55b304ad27fc45a3b69d962a188265d69d4853a9  bin/libs/libcrypto.so.3
+1cdde5e16561aa1a7eefe34a55fe5d640c8d9f92e93c7de2042b2b126bb2ceba  bin/libs/libcurl.so.4
+391146b8d05cac68836c70bd2c02d2a78120630522ad4e90a0d63ae3c32fe6f3  bin/libs/libdbus-1.so.3
+0f2bc5a0f594c52a9b1576a0efa06584e71c2bfed845c256dffc5ee2cac61ee7  bin/libs/libevdev.so.2
+3da1bbdebd5574f98fb297a5c588c40e4546298aaedd4e2ba9ee935f59fe483b  bin/libs/libexpat.so.1
+d08c142f64b2eeeaf9da09baec7651ae78d13319c87e8de159dba43084bcd2b3  bin/libs/libgamestream.so.4
+2d4e4d944d64246548db6a73787b0ea9400ede8887e365ed4c35f7eb7028e539  bin/libs/libmoonlight-common.so.4
+7f9631785c136c69484b62e5d2c7f5c72ce46c6e827f6b519e04700a39446bc5  bin/libs/libopus.so.0
+6a40c6c5562dff75d3140f8826beebdb59a9397d31cf32fb4804da4e87eb29af  bin/libs/libssl.so.3
+6ee85a980af0a46cb61a3ae21c45ba2acbebe016787beb392a731f8a8ef4942d  bin/libs/libswresample.so.3
+2337926baf163fd58cada75521d4e285b10686a1430715831368b1052909dbe3  bin/libs/libuuid.so.1
+fd30f6fab02698dbaa4b075bab2ff25c5e7244327905d4ee25b7ee7eada68d53  bin/libs/libzstd.so.1
+
+## Replaced (present in the current pak, differs from this build)
+| pak file | current sha256 | new sha256 |
+|---|---|---|
+| bin/moonlight | 9ceb006398f6715a0cbc7e06f27ff0819a15df2f2d0dcbf9fd8daefb0e123b18 | d9e499c2a7f078c3d449cbe0c2f1ba0a6d4ffefb820fde1235a60fee5416d72a |
+| bin/libs/libavcodec.so.58 | db0a4ff20a24765b9fc2146e29e2884b364758aecd551502d5f4cf4a66d9a481 | 13a992bdf2d641319f8829c86d5700b0e7d048bd7a10c305310ac5c413499311 |
+| bin/libs/libavutil.so.56 | 6c8e3156a86e6220fac7f8f48f804cfd41df96545e18853d86cf5f590bad16a7 | 7b16f1fa9c53ed675e0fe6b44d91f495d2d85774cd48615cbec6692b79731f45 |
+| bin/libs/libcrypto.so.3 | bc7729db8fc3a9166f017be1c07ccc00cef48f25ee72571d61bb5649bc84c9eb | 064f8de0222409393ed2728d55b304ad27fc45a3b69d962a188265d69d4853a9 |
+| bin/libs/libcurl.so.4 | ac36181ace4c77182df21de8adac4c35761ff256fb2996833a5d57cce0465ba0 | 1cdde5e16561aa1a7eefe34a55fe5d640c8d9f92e93c7de2042b2b126bb2ceba |
+| bin/libs/libdbus-1.so.3 | f6dbd10e42c254c0c5469af2862584d99a5d125cd46450559ef54cacbbc67ffc | 391146b8d05cac68836c70bd2c02d2a78120630522ad4e90a0d63ae3c32fe6f3 |
+| bin/libs/libevdev.so.2 | 58ff33a3f9d078d1aa026bb9e05b827c9af77eb25c0c53bfd323a145d68cc4ce | 0f2bc5a0f594c52a9b1576a0efa06584e71c2bfed845c256dffc5ee2cac61ee7 |
+| bin/libs/libexpat.so.1 | aa40c8e031a751b71ab72f4e5b307282f37d850df946fd0bc58f709caa49141b | 3da1bbdebd5574f98fb297a5c588c40e4546298aaedd4e2ba9ee935f59fe483b |
+| bin/libs/libgamestream.so.4 | d4d86f952146ad63e5f71c5da0c65417a4af0a2215a3b15d573493540a25da9e | d08c142f64b2eeeaf9da09baec7651ae78d13319c87e8de159dba43084bcd2b3 |
+| bin/libs/libmoonlight-common.so.4 | daffca86d7e7a1c8ee45a2f73cd782b37e49c511b9c9230cb33aa888efed831c | 2d4e4d944d64246548db6a73787b0ea9400ede8887e365ed4c35f7eb7028e539 |
+| bin/libs/libopus.so.0 | 29b7d02c15b66536a58a10aaf11f64663d96b0d1aaa3c768b56dfe75d30f5cdd | 7f9631785c136c69484b62e5d2c7f5c72ce46c6e827f6b519e04700a39446bc5 |
+| bin/libs/libssl.so.3 | a793ff31aa8955fbc5ba7d4579c43f197fe91b9add663306818eff401458afc2 | 6a40c6c5562dff75d3140f8826beebdb59a9397d31cf32fb4804da4e87eb29af |
+| bin/libs/libswresample.so.3 | fdc0a580ba0f8e94ccfcf2a033ca2ee087727a2c5774ce13333272587cd18269 | 6ee85a980af0a46cb61a3ae21c45ba2acbebe016787beb392a731f8a8ef4942d |
+| bin/libs/libuuid.so.1 | 491b2465f412a139512f4583900ee818f5de0708c20e389a859f048af28e7487 | 2337926baf163fd58cada75521d4e285b10686a1430715831368b1052909dbe3 |
+| bin/libs/libzstd.so.1 | - | fd30f6fab02698dbaa4b075bab2ff25c5e7244327905d4ee25b7ee7eada68d53 |
+
+## Not shipped by this build (keep the pak copies)
+bin/libs/libFLAC.so.8
+bin/libs/libXau.so.6
+bin/libs/libXdmcp.so.6
+bin/libs/libasyncns.so.0
+bin/libs/libbsd.so.0
+bin/libs/libgcrypt.so.20
+bin/libs/libgpg-error.so.0
+bin/libs/liblz4.so.1
+bin/libs/liblzma.so.5
+bin/libs/libnsl.so.1
+bin/libs/libogg.so.0
+bin/libs/libpulse-simple.so.0
+bin/libs/libpulse.so.0
+bin/libs/libpulsecommon-13.99.so
+bin/libs/libsndfile.so.1
+bin/libs/libsystemd.so.0
+bin/libs/libvorbis.so.0
+bin/libs/libvorbisenc.so.2
+bin/libs/libwrap.so.0
+bin/libs/libxcb.so.1
