@@ -316,7 +316,9 @@ jobs:
           # stays rooted at $CROSS_ROOT; the sysroot is below it and the
           # from-source libs are linked through CMAKE_PREFIX_PATH.
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-          export LDFLAGS="-Wl,--gc-sections"
+          # -L$PREFIX/lib: cmake links the other from-source libraries by
+          # absolute path; the avahi -l flags need the search path.
+          export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib"
           mkdir -p "$MOONLIGHT_SRC/build"
           cd "$MOONLIGHT_SRC/build"
           cmake .. \
