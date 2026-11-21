@@ -318,6 +318,8 @@ jobs:
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DCMAKE_PREFIX_PATH="$PREFIX" \
             -DENABLE_X11=OFF
+          cat "$PREFIX/lib/pkgconfig/avahi-client.pc"
+          grep -n 'AVAHI' CMakeCache.txt || true
           make -j"$(nproc)" 2>&1 | tee build.log
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
           grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
