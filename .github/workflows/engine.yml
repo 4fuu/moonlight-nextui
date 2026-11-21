@@ -136,6 +136,13 @@ jobs:
           grep -q 'user.data2 = cedar_linesize' "$MOONLIGHT_SRC/src/video/sdl.c"
           ! grep -q 'user.data2 = sdlLatencyDebug' "$MOONLIGHT_SRC/src/video/sdl.c"
           grep -q 'int\* linesize = ((int\*) event.user.data2)' "$MOONLIGHT_SRC/src/sdl.c"
+          # The shipped default is quiet: the engine's own statistics
+          # (MOONLIGHT_DEBUG) and the client latency lines
+          # (MOONLIGHT_LATENCY_DEBUG) are opt-in, and nothing prints them
+          # unconditionally.
+          grep -q 'getenv("MOONLIGHT_DEBUG")' "$MOONLIGHT_SRC/src/video/cedar_sdl.c"
+          grep -q 'getenv("MOONLIGHT_LATENCY_DEBUG")' "$MOONLIGHT_SRC/src/sdl.c"
+          grep -q 'if (!sdlLatencyDebug)' "$MOONLIGHT_SRC/src/sdl.c"
           # The one-line change the whole rebuild exists for.
           grep -n '^#define SDL_BUFFER_FRAMES 1$' "$MOONLIGHT_SRC/src/sdl.h"
           grep -n 'SDL_LATENCY_SAMPLES' "$MOONLIGHT_SRC/src/sdl.h"

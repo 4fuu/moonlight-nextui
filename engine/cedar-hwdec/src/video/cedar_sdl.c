@@ -34,6 +34,22 @@
 
 #define PTS_STEP 16667
 
+/*
+ * Interval statistics (every 5 s: frames/pictures/errors/submit) and the
+ * one-off semwait line are development output, off unless MOONLIGHT_DEBUG=1.
+ * The one-time banner and every error line stay on: they cost nothing per
+ * frame and they are what a bug report needs.
+ */
+static int debug_on(void) {
+  static int on = -1;
+
+  if (on < 0) {
+    const char* v = getenv("MOONLIGHT_DEBUG");
+    on = v != NULL && v[0] == '1' && v[1] == '\0';
+  }
+  return on;
+}
+
 static const unsigned char aud_h265[] = { 0, 0, 0, 1, 0x46, 0x01, 0x50 };
 
 struct segs {
@@ -259,6 +275,8 @@ int cedar_sdl_convert(const CedarVideoPicture* p, unsigned char* y, unsigned cha
 
 /* One interval of decode latency, printed by cedar_sdl_dump_stats. */
 static void stats_add(double total_ms) {
+  if (!debug_on())
+    return;
   C.total_ms += total_ms;
   if (total_ms > C.total_max_ms)
     C.total_max_ms = total_ms;
@@ -272,6 +290,9 @@ static void stats_add(double total_ms) {
 
 static void log_semwait(void) {
   struct cedar_sync_stats ss;
+
+  if (!debug_on())
+    return;
 
   cedar_sync_stats(&ss);
   printf("cedar: semwait %s calls=%lu blocked=%lu\n",
@@ -348,6 +369,9 @@ uint64_t cedar_sdl_receive_ms(void) {
 
 void cedar_sdl_dump_stats(void) {
   unsigned long n = C.frames;
+
+  if (!debug_on())
+    return;
 
   if (n == 0)
     return;
@@ -464,10 +488,11 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
   }
 
   /* Interval statistics; the same line shape as the spike's report. */
+  if (debug_on())
+    stats_add((double)(now_ns() - t_submit) / 1e6);
   C.frames++;
   C.errors += (unsigned long)errors;
-  stats_add((double)(now_ns() - t_submit) / 1e6);
-  if (C.logged == 0 && C.frames >= 240) {
+  if (debug_on() && C.logged == 0 && C.frames >= 240) {
     log_semwait();
     C.logged = 1;
   }

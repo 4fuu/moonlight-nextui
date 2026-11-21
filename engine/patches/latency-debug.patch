@@ -11,9 +11,10 @@ samples it collected:
 
 This is the client half of end-to-end latency (network receive to
 SDL_RenderPresent, which swaps the frame in and returns once vsync has
-passed) and the A/B metric for SDL_BUFFER_FRAMES 2 vs 1 on device. It is off
-by default and adds no work to the frame path unless the variable is exactly
-"1".
+passed). It is off by default: with the variable unset (or anything but "1")
+the decoder stores nothing, the presenter measures nothing and no line is
+printed -- only one predictable branch on a flag that never changes after
+sdl_init().
 
 The frame event keeps its payload: data1 is the plane pointers and data2
 their linesizes, which is what sdl_loop() passes to SDL_UpdateYUVTexture. The
@@ -28,7 +29,7 @@ a counter reset in between, and reported the window span (~500 ms) instead of
 the latency. Nothing is reset now; every present measures its own frame.
 
 diff --git a/src/sdl.c b/src/sdl.c
-index 25567de..8dc4086 100644
+index 25567de..9dbdac2 100644
 --- a/src/sdl.c
 +++ b/src/sdl.c
 @@ -24,6 +24,9 @@
@@ -41,7 +42,7 @@ index 25567de..8dc4086 100644
  static bool done;
  static int fullscreen_flags;
  
-@@ -35,9 +38,70 @@ SDL_mutex *mutex;
+@@ -35,9 +38,72 @@ SDL_mutex *mutex;
  
  int sdlCurrentFrame, sdlNextFrame;
  
@@ -63,6 +64,8 @@ index 25567de..8dc4086 100644
 +static uint32_t latency_ring[SDL_LATENCY_SAMPLES];
 +static int latency_ring_count;
 +
++/* Compiled out of the hot path when the switch is off: one predictable branch
++   on a global that never changes after sdl_init(). */
 +void sdl_latency_receive(uint64_t receive_ms) {
 +  if (!sdlLatencyDebug)
 +    return;
@@ -112,7 +115,7 @@ index 25567de..8dc4086 100644
    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
      fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
      exit(1);
-@@ -106,6 +170,7 @@ void sdl_loop() {
+@@ -106,6 +172,7 @@ void sdl_loop() {
              SDL_RenderClear(renderer);
              SDL_RenderCopy(renderer, bmp, NULL, NULL);
              SDL_RenderPresent(renderer);

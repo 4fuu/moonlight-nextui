@@ -15,6 +15,11 @@
  * A second submit without taking the frame must not leak or double-return a
  * decoder picture: the newest picture replaces the untaken one.
  *
+ * With MOONLIGHT_DEBUG unset it also checks the shipped default is quiet: 300
+ * frames through the backend (more than the 240 the semwait line and the 5 s
+ * statistics wait for) print no statistics, no semwait line and no latency
+ * line.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -79,7 +84,7 @@ static const char mock_source[] =
   "  d->served = 1;\n"
   "  for (r = 0; r < 32; r++)\n"
   "    for (x = 0; x < 96; x++)\n"
-  "      d->y[r * 96 + x] = (unsigned char)(r * 4 + (x >> 4));\n"
+  "      d->y[r * 96 + x] = (unsigned char)((r & 1) ? 160 : 60);   /* rows of 4 columns */\n"
   "  for (r = 0; r < 16; r++)\n"
   "    for (x = 0; x < 32; x++) {\n"
   "      d->c[r * 96 + 2 * x] = (unsigned char)(200 + x);   /* V first: NV21 */\n"
@@ -159,7 +164,8 @@ static int submit_one(void) {
 int main(void) {
   unsigned char* planes[3];
   int linesize[3];
-  int r, x, ok;
+  int r, x, i, ok;
+  FILE* out;
 
   build_mock();
   if (cedar_sdl_init(VIDEO_FORMAT_H264, W, H, 60, NULL, 0) != 0) {
@@ -181,7 +187,7 @@ int main(void) {
   ok = 1;
   for (r = 0; r < H; r++)
     for (x = 0; x < W; x++)
-      if (planes[0][r * linesize[0] + x] != (unsigned char)(r * 4 + (x >> 4)))
+      if (planes[0][r * linesize[0] + x] != (unsigned char)((r & 1) ? 160 : 60))
         ok = 0;
   CHECK(ok);
 
@@ -196,6 +202,27 @@ int main(void) {
     }
   CHECK(ok);
 
+  /* The presenter's view: the YV12 picture as SDL would sample it. */
+  out = fopen("/tmp/cedar-frame.ppm", "wb");
+  if (out != NULL) {
+    fprintf(out, "P6\n%d %d\n255\n", W, H);
+    for (r = 0; r < H; r++)
+      for (x = 0; x < W; x++) {
+        int Y = planes[0][r * linesize[0] + x] - 16;
+        int U = planes[1][(r / 2) * linesize[1] + x / 2] - 128;
+        int V = planes[2][(r / 2) * linesize[2] + x / 2] - 128;
+        int rgb[3];
+
+        rgb[0] = (298 * Y + 409 * V + 128) >> 8;
+        rgb[1] = (298 * Y - 100 * U - 208 * V + 128) >> 8;
+        rgb[2] = (298 * Y + 516 * U + 128) >> 8;
+        for (i = 0; i < 3; i++)
+          fputc(rgb[i] < 0 ? 0 : rgb[i] > 255 ? 255 : rgb[i], out);
+      }
+    fclose(out);
+    printf("frame written to /tmp/cedar-frame.ppm\n");
+  }
+
   /* 4. Frames are consumed once: a second take has nothing to show. */
   CHECK(cedar_sdl_frame(planes, linesize) == 0);
 
@@ -203,6 +230,38 @@ int main(void) {
   CHECK(submit_one() == 0);
   CHECK(submit_one() == 0);
   CHECK(cedar_sdl_frame(planes, linesize) == 1);
+
+  /* 6. The default is quiet: no interval statistics, no semwait line. */
+  if (getenv("MOONLIGHT_DEBUG") == NULL) {
+    char line[256];
+    int stats = 0, semwait = 0;
+    FILE* log = fopen("/tmp/cedar-quiet.log", "w+");
+
+    CHECK(log != NULL);
+    if (log != NULL) {
+      int saved = dup(fileno(stdout));
+
+      dup2(fileno(log), fileno(stdout));
+      for (i = 0; i < 300; i++)
+        if (submit_one() == 0)
+          cedar_sdl_frame(planes, linesize);
+      fflush(stdout);
+      dup2(saved, fileno(stdout));
+      close(saved);
+      rewind(log);
+      while (fgets(line, sizeof(line), log) != NULL) {
+        if (strstr(line, "cedar: frames=") != NULL)
+          stats++;
+        if (strstr(line, "semwait") != NULL)
+          semwait++;
+      }
+      fclose(log);
+    }
+    printf("quiet default: %d statistics lines, %d semwait lines over 300 frames\n",
+           stats, semwait);
+    CHECK(stats == 0);
+    CHECK(semwait == 0);
+  }
 
   cedar_sdl_destroy();
   {

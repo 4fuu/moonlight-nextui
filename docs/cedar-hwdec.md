@@ -24,8 +24,17 @@ still streams on FFmpeg.
 Final device build: commit `682bddc`, engine sha256
 `1639c296d928f6fc073f0d72a1bff9aee68466a1eff578a70e907af822957331`, bundle
 sha256 `4319de0f6db00583a3f96eb2880c2c6cf6a0aed41544ac3fa3901627b356c221`.
-The software path stays the default: the launcher exports
-`MOONLIGHT_HWDEC=1` only for the stream process.
+`launch.sh` exports `MOONLIGHT_HWDEC=1` for the engine (unset-safe: a firmware
+without the vendor libraries falls back to FFmpeg by itself). To go back to
+software decoding, put `export MOONLIGHT_HWDEC=0` in
+`<shared userdata>/moonlight/env.sh`; launch.sh sources it last.
+
+Logging in the shipped build is quiet by default. The one-time banner
+(`cedar: h264 1024x768@60, NV21 -> YV12`), `Hardware decode: MOONLIGHT_HWDEC=…`
+and every error line stay on; the 5-second statistics line, the `semwait`
+line and the client latency lines are off. For a diagnosis, `export
+MOONLIGHT_DEBUG=1` (statistics and semwait) or `MOONLIGHT_LATENCY_DEBUG=1`
+(latency) in the same `env.sh`.
 
 ## How it fits
 
@@ -179,30 +188,21 @@ binary with no new warnings. The authoritative build (device toolchain
 Not verified here: anything that needs `/dev/cedar_dev`, `/dev/ion` or the VE —
 that is the device thread's run.
 
-## Device test plan
+## Regression checklist
 
-The engine build from `engine.yml` goes into `engine/bin/`, the pak keeps
-its `shim/moonlight` (`-platform sdl`), and the launcher exports
-`MOONLIGHT_HWDEC=1` for the stream process only. What to compare against the
-current FFmpeg build, at 1280x720@60, one 5-minute session each:
+Already established on the device (see Status); re-run this after any engine
+rebuild, with `MOONLIGHT_DEBUG=1` in `env.sh` for the numbers:
 
-- `stream.log`: `Hardware decode: MOONLIGHT_HWDEC=1` and
-  `cedar: h264 1280x720@60, NV21 -> YV12`, then every 5 s
-  `cedar: frames=… errors=0 … decode=…ms convert=…ms total=…ms`.
-- CPU (`top -b -n1` during the stream): expect a few percent of one core
-  instead of the software decoder's share.
-- No orphaned ION buffers after exit:
-  `/sys/kernel/debug/ion/heaps/sys_user` and the `dmabuf: cache` field of
-  `/sys/class/disp/disp/attr/sys`.
-- If the picture is decoded but looks wrong (colour channel swap), the
-  conversion's VU order is the first thing to check; the spike reported NV21
-  on the Smart Pro, and `cedar_sdl_convert()` handles both NV21 and NV12.
-- Thread profile (`top -H` or the hang log's threads) of the engine process:
-  `VideoRecv` now carries receive + Cedar decode + conversion. Compare its CPU
-  with the FFmpeg build's `VideoRecv`/`VideoDec` pair; if `VideoRecv` is
-  saturated, switch the callbacks to `capabilities = 0`.
-
-Rollback is unsetting `MOONLIGHT_HWDEC`; no binary swap is needed.
+- `Moonlight.txt` shows `Hardware decode: MOONLIGHT_HWDEC=1` and
+  `cedar: h264 <w>x<h>@<fps>, NV21 -> YV12`, then only the 5 s statistics
+  lines (quiet without `MOONLIGHT_DEBUG`).
+- `semwait interposed calls>0`; `submit` a few ms; `errors=0`.
+- The picture matches the software decoder's (no green tint, tiling or
+  freeze; four screenshots a few seconds apart differ).
+- No orphaned ION buffers after exit (`/sys/kernel/debug/ion/heaps/sys_user`,
+  `dmabuf: cache` in `/sys/class/disp/disp/attr/sys`).
+- `export MOONLIGHT_HWDEC=0` in `env.sh` gives the software path unchanged.
+- HOME/overlay exit still stops the engine.
 
 ## License
 
