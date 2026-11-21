@@ -257,149 +257,6 @@ jobs:
           cd /build
           ccache --show-stats
 
-      - name: Provide avahi-client for the build
-        run: |
-          set -e
-          # The vendor sysroot has no Avahi, and moonlight's libgamestream
-          # requires avahi-client (mDNS host discovery, which spruce gets from
-          # libavahi-client-dev:arm64). Mirror that package's build interface:
-          # its headers plus avahi-client.pc. The runtime libraries come from
-          # the sysroot via the closure collection.
-          AVAHI_INC="$PREFIX/include"
-          mkdir -p "$AVAHI_INC/avahi-client" "$AVAHI_INC/avahi-common" "$PREFIX/lib/pkgconfig"
-          for h in avahi-client/client.h avahi-client/lookup.h; do
-            curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
-          done
-          # The full avahi-common header set, as libavahi-common-dev installs it.
-          for h in address alternative cdecl dbus-watch-glue dbus defs domain error \
-                   gccmacro i18n llist malloc rlist simple-watch strlst thread-watch \
-                   timeval utf8 watch; do
-            curl -fsSL --retry 3 -o "$AVAHI_INC/avahi-common/$h.h" \
-              "https://raw.githubusercontent.com/lathiat/avahi/v0.8/avahi-common/$h.h"
-          done
-          # The image's pkg-config prefixes every -I with the sysroot, so
-          # these files carry no -I: cmake finds the headers through
-          # CMAKE_PREFIX_PATH, and the build gets the path from it too.
-          printf '%s\n' \
-            "prefix=$PREFIX" \
-            "Name: avahi-client" \
-            "Description: Avahi mDNS/DNS-SD client API" \
-            "Version: 0.8" \
-            "Requires: avahi-common" \
-            "Libs: -lavahi-client" \
-            "Cflags: -DHAVE_AVAHI" \
-            > "$PREFIX/lib/pkgconfig/avahi-client.pc"
-          printf '%s\n' \
-            "prefix=$PREFIX" \
-            "Name: avahi-common" \
-            "Description: Avahi mDNS/DNS-SD common definitions" \
-            "Version: 0.8" \
-            "Libs: -lavahi-common" \
-            "Cflags: -DHAVE_AVAHI" \
-            > "$PREFIX/lib/pkgconfig/avahi-common.pc"
-          # The sysroot has no avahi runtime either. Link against the aarch64
-          # libraries the pak already bundles (focal avahi 0.8, soname .so.3,
-          # the ABI these headers describe); the closure collector then ships
-          # them next to libgamestream.
-          for lib in avahi-client avahi-common; do
-            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/lib$lib.so.3" "$PREFIX/lib/lib$lib.so"
-          done
-          PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
-            pkg-config --cflags --libs avahi-client
-
-      - name: Provide pulse-simple for the build
-        run: |
-          set -e
-          # The vendor sysroot has no PulseAudio headers either, and spruce
-          # builds with libpulse-dev:arm64. Mirror that package's public
-          # headers and libpulse-simple.pc, and link against the aarch64
-          # PulseAudio 13.99 libraries the pak already bundles.
-          PULSE_VER=13.99.1
-          PULSE_URL="https://gitlab.freedesktop.org/pulseaudio/pulseaudio/-/raw/v$PULSE_VER/src"
-          mkdir -p "$PREFIX/include/pulse" "$PREFIX/lib/pkgconfig"
-          # The public headers of the release the bundled libraries come
-          # from, minus version.h, which meson generates from version.h.in.
-          for h in cdecl channelmap client-conf-x11 client-conf context def direction \
-                   error ext-device-manager ext-device-restore ext-stream-restore \
-                   fork-detect format gccmacro glib-mainloop internal introspect json \
-                   mainloop-api mainloop-signal mainloop operation proplist pulseaudio \
-                   rtclock sample scache simple stream subscribe thread-mainloop timeval \
-                   utf8 util volume xmalloc; do
-            curl -fsSL --retry 3 -o "$PREFIX/include/pulse/$h.h" "$PULSE_URL/pulse/$h.h"
-          done
-          curl -fsSL --retry 3 -o /tmp/pulse-version.h.in "$PULSE_URL/pulse/version.h.in"
-          sed -e "s/@PA_MAJOR@/13/; s/@PA_MINOR@/99/; s/@PA_MICRO@/1/" \
-            /tmp/pulse-version.h.in > "$PREFIX/include/pulse/version.h"
-          grep -E 'define PA_(MAJOR|MINOR|MICRO)' "$PREFIX/include/pulse/version.h"
-          printf '%s\n' \
-            "prefix=$PREFIX" \
-            "Name: libpulse-simple" \
-            "Description: PulseAudio Simple API" \
-            "Version: $PULSE_VER" \
-            "Requires: libpulse" \
-            "Libs: -L${prefix}/lib -lpulse-simple -lpulse" \
-            "Cflags: -DHAVE_PULSE" \
-            > "$PREFIX/lib/pkgconfig/libpulse-simple.pc"
-          printf '%s\n' \
-            "prefix=$PREFIX" \
-            "Name: libpulse" \
-            "Description: PulseAudio client interface" \
-            "Version: $PULSE_VER" \
-            "Libs: -L${prefix}/lib -lpulse" \
-            "Cflags: -DHAVE_PULSE" \
-            > "$PREFIX/lib/pkgconfig/libpulse.pc"
-          for lib in libpulse-simple.so.0 libpulse.so.0; do
-            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/$lib" "$PREFIX/lib/${lib%.so.0}.so"
-          done
-          # libpulse needs libpulsecommon at link time; same location the
-          # closure collection uses.
-          mkdir -p "$PREFIX/lib/pulseaudio"
-          ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/libpulsecommon-13.99.so" \
-            "$PREFIX/lib/pulseaudio/libpulsecommon-13.99.so"
-          # libpulsecommon's own NEEDED libraries (systemd, xcb, ...) come from
-          # the focal arm64 packages the next step installs.
-          ls "$PREFIX/lib/libpulse"*
-
-      - name: Provide the focal arm64 libraries the engine links against
-        run: |
-          set -e
-          # spruce links libpulse-dev:arm64 from Ubuntu 20.04, so the build
-          # sees focal's libsystemd and libxcb. The vendor sysroot has neither,
-          # and its older libdbus-1/libsndfile would not match the pak's
-          # pulse/common tail. Install the focal release packages the pak's
-          # library set is documented to come from (docs/THIRD-PARTY.md):
-          # headers for the build interface, runtime libraries for linking
-          # and the closure. Unpacking debs needs no emulation.
-          mkdir -p /tmp/focal/debs
-          cd /tmp/focal
-          while read -r sum url; do
-            file="debs/$(basename "$url")"
-            curl -fsSL --retry 3 -o "$file" "$url"
-            echo "$sum  $file" | sha256sum -c -
-            dpkg-deb -x "$file" root
-          done <<'DEBS'
-          d5160c016f2d867e08a2a63ee4d039a77a9f5bf985617fae311ae61afdcb7bc6  http://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd-dev_245.4-4ubuntu3_arm64.deb
-          3d69db8f1f044a48ab5fe0c3e32c3996d1bc5d2f8cae61022d17c3d55bf9b011  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb1-dev_1.14-2_arm64.deb
-          69c8db9a78e55302ba359b889c1be9d0c901d7bc13cef8776cb9119f5125b465  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxau/libxau-dev_1.0.9-0ubuntu1_arm64.deb
-          92520a205afefb021bd89a06a377a641a64a8072c9ae6a5c36f89fde9d637646  http://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd0_245.4-4ubuntu3_arm64.deb
-          88e171a33249719366a4e29330775e2ac777226f1f379557daf0777083a1fc93  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb1_1.14-2_arm64.deb
-          0f19eb67992cf9a755a781502529750841d93fb8729691df02b9b16aec845b40  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxau/libxau6_1.0.9-0ubuntu1_arm64.deb
-          DEBS
-          for h in systemd/sd-daemon.h xcb/xcb.h xcb/xcbext.h xcb/xproto.h \
-                   X11/Xauth.h; do
-            mkdir -p "$PREFIX/include/$(dirname "$h")"
-            cp "/tmp/focal/root/usr/include/$h" "$PREFIX/include/$h"
-          done
-          for lib in libsystemd.so.0 libxcb.so.1 libXau.so.6; do
-            src=$(find /tmp/focal/root -name "$lib" | head -1)
-            test -n "$src"
-            cp -L "$src" "$PREFIX/lib/$lib"
-          done
-          for lib in libsystemd libxcb libXau; do
-            ln -sf "$PREFIX/lib/$lib.so."* "$PREFIX/lib/$lib.so"
-          done
-          ls -l "$PREFIX/lib/libsystemd.so" "$PREFIX/lib/libxcb.so" "$PREFIX/lib/libXau.so"
-
       - name: Build moonlight-embedded
         run: |
           set -e
@@ -409,10 +266,9 @@ jobs:
           # stays rooted at $CROSS_ROOT; the sysroot is below it and the
           # from-source libs are linked through CMAKE_PREFIX_PATH.
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-          # -L$PREFIX/lib for the avahi -l flags; rpath-link so the linker
-          # resolves NEEDED libraries (libavcodec's libswresample,
-          # libpulse's libpulsecommon) inside the same prefix.
-          export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib/pulseaudio"
+          # rpath-link so the linker resolves libavcodec's NEEDED
+          # libswresample in the same prefix.
+          export LDFLAGS="-Wl,--gc-sections -Wl,-rpath-link,$PREFIX/lib"
           mkdir -p "$MOONLIGHT_SRC/build"
           cd "$MOONLIGHT_SRC/build"
           cmake .. \
@@ -420,18 +276,18 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DCMAKE_PREFIX_PATH="$PREFIX" \
-            -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections -I$PREFIX/include" \
-            -DENABLE_X11=OFF
-          test -f "$PREFIX/include/avahi-client/client.h"
-          make -j"$(nproc)" VERBOSE=1 2>&1 | tee build.log
-          grep -m1 -o 'aarch64-nextui-linux-gnu-gcc.*libgamestream.so.2.7.0' build.log || true
-          grep -m1 'AVAHI_LIBRARIES\|AVAHI_LDFLAGS' CMakeCache.txt || true
+            -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections" \
+            -DENABLE_X11=OFF \
+            -DENABLE_PULSE=OFF
+          make -j"$(nproc)" 2>&1 | tee build.log
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
-          grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
           # The from-source FFmpeg must be the one linked, not a sysroot copy.
           grep -q "^SDL_INCLUDE_DIRS:INTERNAL=.*$SYSROOT" CMakeCache.txt
-          grep -E 'MOONLIGHT_OPTIONS|HAVE_ALSA|HAVE_SDL|HAVE_PULSE' CMakeCache.txt || true
-          grep -oE 'MOONLIGHT_OPTIONS=[^ ]*' build.log | head -2 || true
+          grep '^ENABLE_PULSE:BOOL=OFF' CMakeCache.txt
+          ! grep -q 'HAVE_PULSE' CMakeFiles/moonlight.dir/flags.make
+          grep -q 'HAVE_ALSA' CMakeFiles/moonlight.dir/flags.make
+          # Audio goes through ALSA on the device; X11, pulse and the
+          # systemd/xcb tail they pull in are not part of this engine.
           cat CMakeFiles/moonlight.dir/flags.make
           test -x moonlight
           # The build must have compiled SDL (not X11/EGL) as its video backend.
