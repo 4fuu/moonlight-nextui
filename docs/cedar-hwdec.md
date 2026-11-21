@@ -17,11 +17,15 @@ still streams on FFmpeg.
 | H.264 720p60 decode, 20 s | 598/600 pictures, 0 errors, 3.74 ms mean decode, 6.4% of one core |
 | HEVC 720p60 decode | 2.72 ms mean decode, 2.8% of one core (`libvdecoder` registers HEVC internally; no `libawh265.so`) |
 | Decoder output format | NV21 (5), stride = width, no crop, `full_range=0`, `matrix=6` |
-| Engine integration (`video/cedar_sdl.c`, `MOONLIGHT_HWDEC=1`) | patch ready, cross-builds, host tests pass |
-| Live stream on the device | **pending owner test** |
+| Engine integration (`video/cedar_sdl.c`, `MOONLIGHT_HWDEC=1`) | done, `engine/patches/sdl-cedar-hwdec.patch`, green in `engine.yml` |
+| Live stream on the device | **done, device-verified**: four different, correct pictures over time, no green tint / tiling / freeze; `submit` 2.85–3.07 ms, `semwait interposed calls=470669`, 0 dropped frames, 0 errors, no ION leak, software decode unchanged |
+| Client latency, hardware path | avg 12–13 ms for 60-frame windows, including the CPU conversion; do not compare with the software path's 1–3 ms minimum (different scope) |
 
-The spike measured with `MOONLIGHT_HWDEC` unset; the engine integration has not
-yet been run against a Sunshine host on the device.
+Final device build: commit `682bddc`, engine sha256
+`1639c296d928f6fc073f0d72a1bff9aee68466a1eff578a70e907af822957331`, bundle
+sha256 `4319de0f6db00583a3f96eb2880c2c6cf6a0aed41544ac3fa3901627b356c221`.
+The software path stays the default: the launcher exports
+`MOONLIGHT_HWDEC=1` only for the stream process.
 
 ## How it fits
 
