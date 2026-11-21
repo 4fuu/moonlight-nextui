@@ -262,14 +262,15 @@ jobs:
           # libavahi-client-dev:arm64). Mirror that package's build interface:
           # its headers plus avahi-client.pc. The runtime libraries come from
           # the sysroot via the closure collection.
-          D="$PREFIX/include/avahi"
-          mkdir -p "$D/avahi-client" "$D/avahi-common" "$PREFIX/lib/pkgconfig"
+          # (AVAHI_INC is a new name: the image already exports D.)
+          AVAHI_INC="$PREFIX/include/avahi"
+          mkdir -p "$AVAHI_INC/avahi-client" "$AVAHI_INC/avahi-common" "$PREFIX/lib/pkgconfig"
           for h in avahi-client/client.h avahi-client/lookup.h; do
-            curl -fsSL --retry 3 -o "$D/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
+            curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
           done
           for h in avahi-common/simple-watch.h avahi-common/malloc.h avahi-common/error.h \
                    avahi-common/address.h avahi-common/defs.h avahi-common/cdecl.h; do
-            curl -fsSL --retry 3 -o "$D/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
+            curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
           done
           # isystem: the image's PKG_CONFIG_SYSROOT_DIR prefixes -I paths.
           printf '%s\n' \
