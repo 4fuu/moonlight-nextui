@@ -74,13 +74,14 @@ jobs:
           for attempt in 1 2 3; do
             if apt-get update &&
                apt-get install -y --no-install-recommends \
-                 build-essential bison file flex nasm ccache patch curl; then
+                 build-essential bison file flex nasm ccache patch curl \
+                 qemu-user-static; then
               break
             fi
             echo "apt attempt $attempt failed; retrying"
             sleep 15
           done
-          command -v ccache nasm bison file patch curl
+          command -v ccache nasm bison file patch curl qemu-aarch64-static
           # The image's ENV is large; show it once so a colliding variable name
           # in a later step is obvious in the log.
           env | sort
@@ -450,8 +451,15 @@ jobs:
             grep -B2 -A2 'bl.*<SDL_RenderPresent' | head
 
           echo "== closure"
-          CROSS_TRIPLE="$CROSS_TRIPLE" python3 "$GITHUB_WORKSPACE/scripts/nextui/check-libs.py" \
-            "$GITHUB_WORKSPACE/engine-out" --sysroot "$SYSROOT"
+          # check-libs.py validates a pak layout (bin/moonlight, bin/libs), so
+          # stage the artifact that way instead of changing either layout.
+          CLOSURE=/tmp/closure-pak
+          rm -rf "$CLOSURE" && mkdir -p "$CLOSURE/bin"
+          cp "$OUT/moonlight" "$CLOSURE/bin/"
+          cp -r "$LIBS" "$CLOSURE/bin/libs"
+          READELF="$CROSS_TRIPLE-readelf" \
+            python3 "$GITHUB_WORKSPACE/scripts/nextui/check-libs.py" \
+              "$CLOSURE" --sysroot "$SYSROOT"
 
       - name: Dry-run the engine through qemu-user
         run: |
@@ -477,7 +485,8 @@ jobs:
         run: |
           set -e
           OUT="$GITHUB_WORKSPACE/engine-out"
-          PAK="$GITHUB_WORKSPACE/Tools/tg5040/Moonlight.pak"
+          # What this artifact replaces: the engine bundled with the pak.
+          PAK="$GITHUB_WORKSPACE/engine"
           {
             echo "# moonlight-embedded engine for tg5040"
             echo "moonlight-embedded: $MOONLIGHT_COMMIT (2.7.0)"
@@ -507,10 +516,13 @@ jobs:
             done
             echo
             echo "## Not shipped by this build (keep the pak copies)"
-            for f in "$PAK"/bin/libs/*.so*; do
-              name=$(basename "$f")
-              [ -f "$OUT/libs/$name" ] || echo "bin/libs/$name"
-            done
+            if [ -d "$PAK/bin/libs" ]; then
+              for f in "$PAK"/bin/libs/*.so*; do
+                [ -e "$f" ] || continue
+                name=$(basename "$f")
+                [ -f "$OUT/libs/$name" ] || echo "bin/libs/$name"
+              done
+            fi
           } > "$OUT/manifest.txt"
           cat "$OUT/manifest.txt"
           { echo "### engine build"; echo '```'; cat "$OUT/manifest.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
