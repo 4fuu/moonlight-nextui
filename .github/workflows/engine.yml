@@ -296,6 +296,9 @@ jobs:
             "Libs: -lavahi-common" \
             "Cflags: -isystem \${includedir}" \
             > "$PREFIX/lib/pkgconfig/avahi-common.pc"
+          echo "PKG_CONFIG_PATH=[$PKG_CONFIG_PATH]"
+          PKG_CONFIG_SYSROOT_DIR= pkg-config --debug --exists avahi-client 2>&1 | grep -iE 'avahi|error|warning' | head -20 || true
+          ls -la "$PREFIX/lib/pkgconfig"
           PKG_CONFIG_SYSROOT_DIR= pkg-config --exists avahi-client
           PKG_CONFIG_SYSROOT_DIR= pkg-config --cflags --libs avahi-client
 
