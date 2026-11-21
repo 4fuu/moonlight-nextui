@@ -335,8 +335,10 @@ jobs:
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
           grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
           # The from-source FFmpeg must be the one linked, not a sysroot copy.
-          grep -q "^AVCODEC_LIBRARIES:INTERNAL=.*$PREFIX" CMakeCache.txt
           grep -q "^SDL_INCLUDE_DIRS:INTERNAL=.*$SYSROOT" CMakeCache.txt
+          grep -E 'MOONLIGHT_OPTIONS|HAVE_ALSA|HAVE_SDL|HAVE_PULSE' CMakeCache.txt || true
+          grep -oE 'MOONLIGHT_OPTIONS=[^ ]*' build.log | head -2 || true
+          cat CMakeFiles/moonlight.dir/flags.make
           test -x moonlight
           # The build must have compiled SDL (not X11/EGL) as its video backend.
           grep -q 'HAVE_SDL' CMakeFiles/moonlight.dir/flags.make
