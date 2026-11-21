@@ -428,8 +428,13 @@ jobs:
           ! grep -qE 'sdlCurrentFrame <= sdlNextFrame - 2' /tmp/sdl.i
           "$CC" --sysroot="$SYSROOT" -E -DHAVE_SDL "${BUILD_FLAGS[@]}" "${BUILD_INCLUDES[@]}" \
             "$MOONLIGHT_SRC/src/video/sdl.c" > /tmp/video_sdl.i
-          grep -q 'SLICE_THREADING, 1, SLICES_PER_FRAME' /tmp/video_sdl.i
-          ! grep -q 'SLICE_THREADING, 2, SLICES_PER_FRAME' /tmp/video_sdl.i
+          # SLICE_THREADING and SLICES_PER_FRAME are macros as well, so the
+          # preprocessed call reads ffmpeg_init(..., 0x4, 1, 4): match the
+          # expanded form and assert the buffer count, which is the point of
+          # the patch.
+          grep -oE 'ffmpeg_init[(]videoFormat, width, height, [^,]+, [0-9]+, [^)]+[)]' /tmp/video_sdl.i | head -1
+          grep -qE 'ffmpeg_init[(]videoFormat, width, height, [^,]+, 1, [^)]+[)]' /tmp/video_sdl.i
+          ! grep -qE 'ffmpeg_init[(]videoFormat, width, height, [^,]+, 2, [^)]+[)]' /tmp/video_sdl.i
           echo "patched constants confirmed in the preprocessed sources"
 
           echo "== patch 2: latency measurement compiled in"
