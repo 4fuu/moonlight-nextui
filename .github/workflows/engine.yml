@@ -275,7 +275,8 @@ jobs:
                    avahi-common/address.h avahi-common/defs.h avahi-common/cdecl.h; do
             curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
           done
-          # isystem: the image's PKG_CONFIG_SYSROOT_DIR prefixes -I paths.
+          # The image's PKG_CONFIG_SYSROOT_DIR only rewrites paths that start
+          # with the sysroot, so -I$PREFIX/include survives pkg-config.
           printf '%s\n' \
             "prefix=$PREFIX" \
             "includedir=\${prefix}/include" \
