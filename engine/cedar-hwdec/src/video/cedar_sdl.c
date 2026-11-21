@@ -377,7 +377,16 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
   else if (C.pps_len > 0)
     segs_add(&C.segs, C.pps, C.pps_len);
 
+  /*
+   * Receive time for the latency report, in LiGetMillis()'s epoch. The
+   * field is receiveTimeMs in the engine's moonlight-common-c and
+   * receiveTimeUs (microseconds) in newer moonlight-common-c.
+   */
+#ifdef MOONLIGHT_RECEIVE_TIME_US
+  C.receive_ms = (uint64_t)(du->receiveTimeUs / 1000);
+#else
   C.receive_ms = du->receiveTimeMs;
+#endif
   seq = cedar_sync_seq();
   t_submit = now_ns();
   if (cedar_submit(C.dec, C.segs.v, C.segs.n, pts) != 0) {

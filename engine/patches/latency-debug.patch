@@ -1,10 +1,12 @@
 SDL backend: optional client latency measurement (network receive -> present)
 
-When MOONLIGHT_LATENCY_DEBUG=1, the SDL backend records the receive time of
-each frame's first packet (DECODE_UNIT.receiveTimeMs, in LiGetMillis()
-milliseconds) and prints a line every 60 presented frames:
+When MOONLIGHT_LATENCY_DEBUG=1, the SDL backend measures each presented frame
+at the moment it presents it: present time (LiGetMillis) minus that frame's
+own receive time (DECODE_UNIT.receiveTimeMs in the engine's common-c;
+receiveTimeUs / 1000 in newer ones), carried by the frame event. Every 60
+frames it aggregates the samples it collected:
 
-  client latency recv->present: avg X min Y max Z (60 frames)
+  client latency recv->present: avg X min A p50 B p95 C max D (60 frames)
 
 This is the client half of end-to-end latency (network receive to
 SDL_RenderPresent, which swaps the frame in and returns once vsync has
