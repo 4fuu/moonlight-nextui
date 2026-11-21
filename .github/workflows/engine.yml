@@ -317,7 +317,8 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PREFIX" \
             -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections -I$PREFIX/include" \
             -DENABLE_X11=OFF
-          make -j"$(nproc)" 2>&1 | tee build.log
+          make -j"$(nproc)" VERBOSE=1 2>&1 | tee build.log
+          grep -m1 'discover.c' build.log || true
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
           grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
           # The from-source FFmpeg must be the one linked, not a sysroot copy.
