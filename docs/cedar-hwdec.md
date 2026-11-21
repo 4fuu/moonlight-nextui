@@ -106,7 +106,9 @@ place:
    (`access()`, `cedar_has_codec()`). tsp called
    `AddVDPluginSingle("/usr/lib/libawh265.so")` unconditionally; the Brick Pro
    firmware has no such file, and HEVC is registered inside `libvdecoder`
-   itself. This is what the device spike confirmed.
+   itself. This is what the device spike confirmed. `MOONLIGHT_CEDAR_LIBDIR`
+   redirects `dlopen()` and the plugin lookup to a directory (the host test's
+   mock); unset, it is `/usr/lib`.
 2. **`cedar_sync.c`** — `sem_timedwait()` at an absolute `CLOCK_REALTIME`
    instead of `sem_clockwait()` (glibc 2.30+). The tg5040 toolchain sysroot is
    glibc 2.28.
@@ -133,6 +135,12 @@ Host, in this repository (`engine/cedar-hwdec/tests/`):
 - `test_cedar_fallback.c` — without vendor libraries `cedar_load()` fails
   cleanly, `cedar_sdl_available()` is 0 and `cedar_sdl_init()` returns -1 with
   a message, which is the condition that makes `sdl_setup()` pick FFmpeg.
+- `test_cedar_init.c` — with mock vendor libraries in
+  `MOONLIGHT_CEDAR_LIBDIR`, `cedar_sdl_init()` must return 0 for H.264 and
+  HEVC. This is the regression test for the first device run, where a reversed
+  `cedar_load()` test made the engine fall back to FFmpeg with an empty error
+  and nothing noticed. A deliberately corrupt library is not covered: glibc's
+  loader keeps a record of a failed object that crashes at exit.
 
 Cross-build: `engine/patches/sdl-cedar-hwdec.patch` applies cleanly after
 `sdl-buffer-1.patch` and `latency-debug.patch` on `moonlight-embedded`

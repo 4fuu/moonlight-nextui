@@ -1,8 +1,10 @@
 name: Cedar host tests
 
 # Unit tests for the Cedar hardware decoder's portable half: the picture
-# conversion (NV21/NV12, padded stride, crop) and the fallback contract
-# (no vendor libraries -> FFmpeg).
+# conversion (NV21/NV12, padded stride, crop), the fallback contract (no
+# vendor libraries -> FFmpeg), and the init path (mock vendor libraries ->
+# cedar_sdl_init() succeeds), which a reversed cedar_load() test broke on the
+# device without any test noticing.
 #
 # The engine itself is built by engine.yml, which applies
 # engine/patches/sdl-cedar-hwdec.patch; this job only exercises the sources in
@@ -47,7 +49,7 @@ jobs:
           cd engine/cedar-hwdec
           CFLAGS="-std=gnu99 -Wall -Wextra -Werror -Wno-unused-parameter -O2"
           SOURCES="src/video/cedar_sdl.c src/cedar/cedar.c src/cedar/cedar_sync.c"
-          for test in test_cedar_convert test_cedar_fallback; do
+          for test in test_cedar_convert test_cedar_fallback test_cedar_init; do
             echo "== $test"
             gcc $CFLAGS -Isrc -I/tmp/common-c/src \
               -o "/tmp/$test" "tests/$test.c" $SOURCES -ldl -lpthread

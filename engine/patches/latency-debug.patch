@@ -12,11 +12,17 @@ passed) and the A/B metric for SDL_BUFFER_FRAMES 2 vs 1 on device. It is off
 by default and adds no work to the frame path unless the variable is exactly
 "1".
 
+Producer and reporter run on different threads (the decoder thread fills the
+ring, the SDL thread reports). A batch is claimed by advancing the index past
+it with an atomic store, never by resetting a shared counter from the
+present side, so the report always covers exactly the frames it measured
+instead of racing the producer into "(1 frames)" lines.
+
 Applies after sdl-buffer-1.patch on moonlight-embedded
 274d3db34da764344a7a402ee74e6080350ac0cd.
 
 diff --git a/src/sdl.c b/src/sdl.c
-index 25567de..5fe06be 100644
+index 25567de..e225959 100644
 --- a/src/sdl.c
 +++ b/src/sdl.c
 @@ -24,6 +24,8 @@
@@ -28,25 +34,35 @@ index 25567de..5fe06be 100644
  static bool done;
  static int fullscreen_flags;
  
-@@ -35,9 +37,42 @@ SDL_mutex *mutex;
+@@ -35,9 +37,53 @@ SDL_mutex *mutex;
  
  int sdlCurrentFrame, sdlNextFrame;
  
 +bool sdlLatencyDebug;
-+uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SAMPLES];
++uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SLOTS];
 +int sdlLatencyCount;
 +
-+/* Client-side latency: LiGetMillis() at SDL_RenderPresent minus the receive
-+   time of the frame's first packet. Only the networking thread writes
-+   sdlLatencyCount; the SDL thread reads it and writes every 60 frames. */
-+static void sdl_latency_presented() {
-+  if (!sdlLatencyDebug)
-+    return;
-+
-+  uint64_t now = LiGetMillis();
++/*
++ * Client-side latency: LiGetMillis() at SDL_RenderPresent minus the receive
++ * time of the frame's first packet. The networking thread writes the ring and
++ * advances sdlLatencyCount; the SDL thread reads only the entries below the
++ * count it saw and then advances the index past them. Pairs are claimed by
++ * index, never by resetting the count, so a sample is never attributed to the
++ * wrong frame and nothing waits on a lock in the present path.
++ */
++static void sdl_latency_presented(void) {
 +  int i;
 +  uint64_t sum = 0, min = UINT64_MAX, max = 0;
-+  for (i = 0; i < sdlLatencyCount; i++) {
++  int claimed = __atomic_load_n(&sdlLatencyCount, __ATOMIC_ACQUIRE);
++
++  if (!sdlLatencyDebug || claimed < SDL_LATENCY_SAMPLES)
++    return;
++
++  /* Claim these samples: later ones take the slots after them. */
++  __atomic_store_n(&sdlLatencyCount, SDL_LATENCY_SLOTS, __ATOMIC_RELEASE);
++
++  uint64_t now = LiGetMillis();
++  for (i = 0; i < claimed; i++) {
 +    uint64_t latency = now - sdlLatencyReceiveMs[i];
 +    sum += latency;
 +    if (latency < min)
@@ -55,11 +71,12 @@ index 25567de..5fe06be 100644
 +      max = latency;
 +  }
 +
-+  if (sdlLatencyCount > 0)
-+    printf("client latency recv->present: avg %" PRIu64 " min %" PRIu64 " max %" PRIu64 " (%d frames)\n",
-+           sum / sdlLatencyCount, min, max, sdlLatencyCount);
++  printf("client latency recv->present: avg %" PRIu64 " min %" PRIu64 " max %" PRIu64 " (%d frames)\n",
++         sum / claimed, min, max, claimed);
++  fflush(stdout);
 +
-+  sdlLatencyCount = 0;
++  /* Once the ring has wrapped, both halves hold measured pairs. */
++  __atomic_store_n(&sdlLatencyCount, 0, __ATOMIC_RELEASE);
 +}
 +
  void sdl_init(int width, int height, bool fullscreen) {
@@ -71,7 +88,7 @@ index 25567de..5fe06be 100644
    if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
      fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
      exit(1);
-@@ -106,6 +141,7 @@ void sdl_loop() {
+@@ -106,6 +152,7 @@ void sdl_loop() {
              SDL_RenderClear(renderer);
              SDL_RenderCopy(renderer, bmp, NULL, NULL);
              SDL_RenderPresent(renderer);
@@ -80,7 +97,7 @@ index 25567de..5fe06be 100644
              fprintf(stderr, "Couldn't lock mutex\n");
          }
 diff --git a/src/sdl.h b/src/sdl.h
-index 65345ba..f22cd17 100644
+index 65345ba..e574451 100644
 --- a/src/sdl.h
 +++ b/src/sdl.h
 @@ -22,6 +22,7 @@
@@ -91,20 +108,21 @@ index 65345ba..f22cd17 100644
  
  #define SDL_NOTHING 0
  #define SDL_QUIT_APPLICATION 1
-@@ -39,4 +40,11 @@ void sdl_loop();
+@@ -39,4 +40,12 @@ void sdl_loop();
  extern SDL_mutex *mutex;
  extern int sdlCurrentFrame, sdlNextFrame;
  
 +/* Per-frame client latency (network receive -> SDL_RenderPresent) measured by
 +   src/video/sdl.c and reported by src/sdl.c when MOONLIGHT_LATENCY_DEBUG=1. */
 +#define SDL_LATENCY_SAMPLES 60
++#define SDL_LATENCY_SLOTS (2 * SDL_LATENCY_SAMPLES)
 +extern bool sdlLatencyDebug;
-+extern uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SAMPLES];
++extern uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SLOTS];
 +extern int sdlLatencyCount;
 +
  #endif /* HAVE_SDL */
 diff --git a/src/video/sdl.c b/src/video/sdl.c
-index 1a7f6cf..2b45820 100644
+index 1a7f6cf..32bdec6 100644
 --- a/src/video/sdl.c
 +++ b/src/video/sdl.c
 @@ -33,6 +33,7 @@
@@ -125,13 +143,17 @@ index 1a7f6cf..2b45820 100644
    ensure_buf_size(&ffmpeg_buffer, &ffmpeg_buffer_size, decodeUnit->fullLength + AV_INPUT_BUFFER_PADDING_SIZE);
  
    while (entry != NULL) {
-@@ -72,6 +76,10 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+@@ -72,6 +76,14 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
      event.user.code = SDL_CODE_FRAME;
      event.user.data1 = &frame->data;
      event.user.data2 = &frame->linesize;
-+    if (sdlLatencyDebug && sdlLatencyCount < SDL_LATENCY_SAMPLES) {
-+      sdlLatencyReceiveMs[sdlLatencyCount] = last_receive_ms;
-+      sdlLatencyCount++;
++    if (sdlLatencyDebug) {
++      /* Claim a slot and publish the pair before the index moves. */
++      int slot = __atomic_load_n(&sdlLatencyCount, __ATOMIC_RELAXED);
++      if (slot < SDL_LATENCY_SLOTS) {
++        sdlLatencyReceiveMs[slot] = last_receive_ms;
++        __atomic_store_n(&sdlLatencyCount, slot + 1, __ATOMIC_RELEASE);
++      }
 +    }
      SDL_PushEvent(&event);
    }

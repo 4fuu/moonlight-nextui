@@ -48,11 +48,18 @@ int cedar_has_codec(int codec)
     return codec == CEDAR_CODEC_H265 ? plugins.h265 : plugins.h264;
 }
 
-static void add_plugin(const char *name, int *present)
+static void add_plugin(const char *file, int *present)
 {
-    if (access(name, R_OK) != 0)
+    char path[256];
+    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
+
+    if (dir != NULL && dir[0] != '\0')
+        snprintf(path, sizeof(path), "%s/%s", dir, file);
+    else
+        snprintf(path, sizeof(path), "/usr/lib/%s", file);
+    if (access(path, R_OK) != 0)
         return;
-    api.add_plugin((char *)name);
+    api.add_plugin(path);
     *present = 1;
 }
 
@@ -67,11 +74,21 @@ static void set_err(char *err, size_t errlen, const char *fmt, ...)
     va_end(ap);
 }
 
+/*
+ * Local change: MOONLIGHT_CEDAR_LIBDIR names the directory the vendor
+ * libraries are loaded from (the host test points it at its mock); unset
+ * means the firmware's /usr/lib, as on the device.
+ */
 static void *open_lib(const char *name)
 {
-    char path[128];
+    char path[256];
+    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
     void *h;
 
+    if (dir != NULL && dir[0] != '\0') {
+        snprintf(path, sizeof(path), "%s/%s", dir, name);
+        return dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    }
     snprintf(path, sizeof(path), "/usr/lib/%s", name);
     h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
     if (h == NULL)
@@ -126,8 +143,8 @@ int cedar_load(char *err, size_t errlen)
      * AddVDPlugin() would dlopen every lib*aw*.so in /usr/lib, including
      * all audio decoders. Register just the two codecs Moonlight uses.
      */
-    add_plugin("/usr/lib/libawh264.so", &plugins.h264);
-    add_plugin("/usr/lib/libawh265.so", &plugins.h265);
+    add_plugin("libawh264.so", &plugins.h264);
+    add_plugin("libawh265.so", &plugins.h265);
     api.loaded = 1;
     return 0;
 }

@@ -15,14 +15,6 @@ The renderer callbacks keep CAPABILITY_DIRECT_SUBMIT, as with FFmpeg.
 
 decode loop, pending-picture accounting, PPS/AUD frame closing, stall rebuild
 and DR_NEED_IDR handling are ported from isalin/moonlight-tsp
-(GPL-3.0-or-later) src/video_cedar.c; tsp's disp2/G2D/ION display half is not
-ported. Sources of truth and the spike that proved the ABI on the device:
-engine/cedar-hwdec/. This patch is regenerated from them by
-engine/cedar-hwdec/scripts/make-engine-patch.sh.
-
-Applies after sdl-buffer-1.patch and latency-debug.patch on
-moonlight-embedded 274d3db34da764344a7a402ee74e6080350ac0cd.
-
 diff --git a/CMakeLists.txt b/CMakeLists.txt
 index e724721..3e079a0 100644
 --- a/CMakeLists.txt
@@ -62,10 +54,10 @@ index e724721..3e079a0 100644
    endif()
 diff --git a/src/cedar/cedar.c b/src/cedar/cedar.c
 new file mode 100644
-index 0000000..309f803
+index 0000000..f24682d
 --- /dev/null
 +++ b/src/cedar/cedar.c
-@@ -0,0 +1,305 @@
+@@ -0,0 +1,322 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#include "cedar.h"
 +
@@ -116,11 +108,18 @@ index 0000000..309f803
 +    return codec == CEDAR_CODEC_H265 ? plugins.h265 : plugins.h264;
 +}
 +
-+static void add_plugin(const char *name, int *present)
++static void add_plugin(const char *file, int *present)
 +{
-+    if (access(name, R_OK) != 0)
++    char path[256];
++    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
++
++    if (dir != NULL && dir[0] != '\0')
++        snprintf(path, sizeof(path), "%s/%s", dir, file);
++    else
++        snprintf(path, sizeof(path), "/usr/lib/%s", file);
++    if (access(path, R_OK) != 0)
 +        return;
-+    api.add_plugin((char *)name);
++    api.add_plugin(path);
 +    *present = 1;
 +}
 +
@@ -135,11 +134,21 @@ index 0000000..309f803
 +    va_end(ap);
 +}
 +
++/*
++ * Local change: MOONLIGHT_CEDAR_LIBDIR names the directory the vendor
++ * libraries are loaded from (the host test points it at its mock); unset
++ * means the firmware's /usr/lib, as on the device.
++ */
 +static void *open_lib(const char *name)
 +{
-+    char path[128];
++    char path[256];
++    const char *dir = getenv("MOONLIGHT_CEDAR_LIBDIR");
 +    void *h;
 +
++    if (dir != NULL && dir[0] != '\0') {
++        snprintf(path, sizeof(path), "%s/%s", dir, name);
++        return dlopen(path, RTLD_NOW | RTLD_GLOBAL);
++    }
 +    snprintf(path, sizeof(path), "/usr/lib/%s", name);
 +    h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
 +    if (h == NULL)
@@ -194,8 +203,8 @@ index 0000000..309f803
 +     * AddVDPlugin() would dlopen every lib*aw*.so in /usr/lib, including
 +     * all audio decoders. Register just the two codecs Moonlight uses.
 +     */
-+    add_plugin("/usr/lib/libawh264.so", &plugins.h264);
-+    add_plugin("/usr/lib/libawh265.so", &plugins.h265);
++    add_plugin("libawh264.so", &plugins.h264);
++    add_plugin("libawh265.so", &plugins.h265);
 +    api.loaded = 1;
 +    return 0;
 +}
@@ -918,10 +927,10 @@ index ac21082..6cc6ead 100644
        fprintf(stderr, "Platform '%s' not found\n", config.platform);
 diff --git a/src/video/cedar_sdl.c b/src/video/cedar_sdl.c
 new file mode 100644
-index 0000000..ac93cae
+index 0000000..87977c0
 --- /dev/null
 +++ b/src/video/cedar_sdl.c
-@@ -0,0 +1,446 @@
+@@ -0,0 +1,450 @@
 +/*
 + * Cedar hardware decode for the SDL backend.
 + *
@@ -996,7 +1005,7 @@ index 0000000..ac93cae
 +}
 +
 +int cedar_sdl_available(void) {
-+  char err[160];
++  char err[160] = "";
 +
 +  if (cedar_load(err, sizeof(err)) != 0) {
 +    fprintf(stderr, "cedar: %s\n", err);
@@ -1007,6 +1016,9 @@ index 0000000..ac93cae
 +
 +int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, size_t errlen) {
 +  memset(&C.cfg, 0, sizeof(C.cfg));
++  /* Never leave a caller printing uninitialised memory on a failure path. */
++  if (err != NULL && errlen > 0)
++    err[0] = '\0';
 +  if (video_format & VIDEO_FORMAT_MASK_H264)
 +    C.cfg.codec = CEDAR_CODEC_H264;
 +  else if (video_format & VIDEO_FORMAT_MASK_H265)
@@ -1015,7 +1027,8 @@ index 0000000..ac93cae
 +    snprintf(err, errlen, "format %#x is not H.264 or HEVC", video_format);
 +    return -1;
 +  }
-+  if (!cedar_load(err, errlen))
++  /* cedar_load returns 0 on success, -1 with a message in err. */
++  if (cedar_load(err, errlen) != 0)
 +    return -1;
 +  if (!cedar_has_codec(C.cfg.codec)) {
 +    snprintf(err, errlen, "no Cedar plugin for %s",
@@ -1093,7 +1106,7 @@ index 0000000..ac93cae
 +}
 +
 +static int open_decoder(void) {
-+  char err[160];
++  char err[160] = "";
 +
 +  C.dec = cedar_open(&C.cfg, err, sizeof(err));
 +  if (C.dec == NULL) {
@@ -1427,7 +1440,7 @@ index 0000000..7680d6b
 +
 +#endif
 diff --git a/src/video/sdl.c b/src/video/sdl.c
-index 2b45820..676cd23 100644
+index 32bdec6..68021c2 100644
 --- a/src/video/sdl.c
 +++ b/src/video/sdl.c
 @@ -19,6 +19,7 @@

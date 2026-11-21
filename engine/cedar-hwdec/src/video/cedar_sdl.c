@@ -72,7 +72,7 @@ static uint64_t now_ns(void) {
 }
 
 int cedar_sdl_available(void) {
-  char err[160];
+  char err[160] = "";
 
   if (cedar_load(err, sizeof(err)) != 0) {
     fprintf(stderr, "cedar: %s\n", err);
@@ -83,6 +83,9 @@ int cedar_sdl_available(void) {
 
 int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, size_t errlen) {
   memset(&C.cfg, 0, sizeof(C.cfg));
+  /* Never leave a caller printing uninitialised memory on a failure path. */
+  if (err != NULL && errlen > 0)
+    err[0] = '\0';
   if (video_format & VIDEO_FORMAT_MASK_H264)
     C.cfg.codec = CEDAR_CODEC_H264;
   else if (video_format & VIDEO_FORMAT_MASK_H265)
@@ -91,7 +94,8 @@ int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, 
     snprintf(err, errlen, "format %#x is not H.264 or HEVC", video_format);
     return -1;
   }
-  if (!cedar_load(err, errlen))
+  /* cedar_load returns 0 on success, -1 with a message in err. */
+  if (cedar_load(err, errlen) != 0)
     return -1;
   if (!cedar_has_codec(C.cfg.codec)) {
     snprintf(err, errlen, "no Cedar plugin for %s",
@@ -169,7 +173,7 @@ static int segs_add(struct segs* s, const void* data, size_t len) {
 }
 
 static int open_decoder(void) {
-  char err[160];
+  char err[160] = "";
 
   C.dec = cedar_open(&C.cfg, err, sizeof(err));
   if (C.dec == NULL) {
