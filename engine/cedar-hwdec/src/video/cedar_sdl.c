@@ -48,15 +48,20 @@ static struct {
   size_t pps_len;
   struct segs segs;
   unsigned long no_picture_run;
-  int pending;              /* submitted frames not yet decoded */
+  int pending_frames;       /* submitted frames not yet decoded */
   uint64_t receive_ms;      /* receive time of the frame being decoded */
   int logged;               /* one-off reports already made */
   int format_warned;
 
-  /* YV12 planes handed to sdl.c's frame event; sized at init. */
+  /*
+   * YV12 planes handed to sdl.c's frame event; sized at init. The decoder
+   * picture waits in `pending` until cedar_sdl_frame() converts it, which
+   * sdl.c does while holding the SDL mutex, so the conversion can never
+   * rewrite the buffer the texture upload is reading.
+   */
   unsigned char* planes[3];
   int linesize[3];
-  int frame_ready;
+  CedarVideoPicture* pending;  /* decoded, not yet converted for sdl.c */
 
   /* Interval statistics, printed by cedar_sdl_dump_stats. */
   unsigned long frames, pictures, errors, recreated;
@@ -116,7 +121,7 @@ int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, 
   C.cfg.smooth = 0;
   C.cfg.vbv_bytes = 4 << 20;
   C.pps_len = 0;
-  C.pending = 0;
+  C.pending = NULL;   /* the decoder that owned it is gone */
   C.no_picture_run = 0;
   C.logged = 0;
   C.format_warned = 0;
@@ -139,7 +144,7 @@ int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, 
   C.linesize[0] = width;
   C.linesize[1] = width / 2;
   C.linesize[2] = width / 2;
-  C.frame_ready = 0;
+  C.pending = NULL;
 
   printf("cedar: %s %dx%d@%d, NV21 -> YV12\n",
          C.cfg.codec == CEDAR_CODEC_H265 ? "HEVC" : "H.264", width, height, C.cfg.fps);
@@ -152,7 +157,7 @@ void cedar_sdl_destroy(void) {
   C.dec = NULL;
   free(C.planes[0]);
   C.planes[0] = NULL;
-  C.frame_ready = 0;
+  C.pending = NULL;
   free(C.segs.v);
   memset(&C.segs, 0, sizeof(C.segs));
 }
@@ -185,9 +190,10 @@ static int open_decoder(void) {
 }
 
 static int rebuild_decoder(void) {
+  /* Pictures belong to the decoder that produced them; close releases them. */
   cedar_close(C.dec);
   C.dec = NULL;
-  C.pending = 0;
+  C.pending = NULL;
   C.recreated++;
   fprintf(stderr, "cedar: rebuilding decoder\n");
   return open_decoder();
@@ -304,25 +310,32 @@ static void take_pictures(void) {
     C.no_picture_run = STALL_FRAMES;
     return;
   }
-  if (cedar_sdl_convert(latest, C.planes[0], C.planes[1], C.planes[2],
-                        C.linesize[0], C.linesize[1], C.linesize[2]) != 0) {
-    if (!C.format_warned) {
-      fprintf(stderr, "cedar: picture format %d cannot be converted\n",
-              latest->ePixelFormat);
-      C.format_warned = 1;
-    }
-    C.errors++;
-    cedar_return_picture(C.dec, latest);
-    return;
-  }
-  cedar_return_picture(C.dec, latest);
-  C.frame_ready = 1;
+
+  /* A picture the presenter never took is stale: drop it, show the newest. */
+  if (C.pending != NULL)
+    cedar_return_picture(C.dec, C.pending);
+  C.pending = latest;
 }
 
 int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]) {
-  if (!C.frame_ready)
+  if (C.pending == NULL)
     return 0;
-  C.frame_ready = 0;
+
+  if (cedar_sdl_convert(C.pending, C.planes[0], C.planes[1], C.planes[2],
+                        C.linesize[0], C.linesize[1], C.linesize[2]) != 0) {
+    if (!C.format_warned) {
+      fprintf(stderr, "cedar: picture format %d cannot be converted\n",
+              C.pending->ePixelFormat);
+      C.format_warned = 1;
+    }
+    C.errors++;
+    cedar_return_picture(C.dec, C.pending);
+    C.pending = NULL;
+    return 0;
+  }
+  cedar_return_picture(C.dec, C.pending);
+  C.pending = NULL;
+
   /* Same shape as AVFrame.data/linesize, which sdl.c already passes on. */
   memcpy(planes, C.planes, sizeof(C.planes));
   memcpy(linesize, C.linesize, sizeof(C.linesize));
@@ -393,7 +406,7 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
     /* Stream buffer full or broken: start over from an IDR frame. */
     fprintf(stderr, "cedar: submit failed (%d bytes)\n", du->fullLength);
     cedar_reset(C.dec);
-    C.pending = 0;
+    C.pending_frames = 0;
     return DR_NEED_IDR;
   }
   /*
@@ -402,8 +415,8 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
    * none is left. A frame the decoder dropped would leave the count high, so
    * it is capped.
    */
-  if (C.pending < 2)
-    C.pending++;
+  if (C.pending_frames < 2)
+    C.pending_frames++;
   deadline = t_submit + PARSE_WAIT_NS;
 
   for (tries = 0; tries < 32; tries++) {
@@ -414,9 +427,9 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
     }
     ret = cedar_decode(C.dec);
     if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED) {
-      if (C.pending > 0)
-        C.pending--;
-      if (C.pending == 0)
+      if (C.pending_frames > 0)
+        C.pending_frames--;
+      if (C.pending_frames == 0)
         break;
       continue;   /* an older frame: keep going for ours */
     }
@@ -437,7 +450,7 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
     errors++;
     break;
   }
-  if (C.pending > 0)
+  if (C.pending_frames > 0)
     errors++;   /* the frame did not finish in time */
 
   if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED)

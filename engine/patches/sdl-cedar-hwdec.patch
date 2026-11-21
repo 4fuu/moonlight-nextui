@@ -956,10 +956,10 @@ index ac21082..6cc6ead 100644
        fprintf(stderr, "Platform '%s' not found\n", config.platform);
 diff --git a/src/video/cedar_sdl.c b/src/video/cedar_sdl.c
 new file mode 100644
-index 0000000..b354bf6
+index 0000000..c3974b3
 --- /dev/null
 +++ b/src/video/cedar_sdl.c
-@@ -0,0 +1,465 @@
+@@ -0,0 +1,478 @@
 +/*
 + * Cedar hardware decode for the SDL backend.
 + *
@@ -1010,15 +1010,20 @@ index 0000000..b354bf6
 +  size_t pps_len;
 +  struct segs segs;
 +  unsigned long no_picture_run;
-+  int pending;              /* submitted frames not yet decoded */
++  int pending_frames;       /* submitted frames not yet decoded */
 +  uint64_t receive_ms;      /* receive time of the frame being decoded */
 +  int logged;               /* one-off reports already made */
 +  int format_warned;
 +
-+  /* YV12 planes handed to sdl.c's frame event; sized at init. */
++  /*
++   * YV12 planes handed to sdl.c's frame event; sized at init. The decoder
++   * picture waits in `pending` until cedar_sdl_frame() converts it, which
++   * sdl.c does while holding the SDL mutex, so the conversion can never
++   * rewrite the buffer the texture upload is reading.
++   */
 +  unsigned char* planes[3];
 +  int linesize[3];
-+  int frame_ready;
++  CedarVideoPicture* pending;  /* decoded, not yet converted for sdl.c */
 +
 +  /* Interval statistics, printed by cedar_sdl_dump_stats. */
 +  unsigned long frames, pictures, errors, recreated;
@@ -1078,7 +1083,7 @@ index 0000000..b354bf6
 +  C.cfg.smooth = 0;
 +  C.cfg.vbv_bytes = 4 << 20;
 +  C.pps_len = 0;
-+  C.pending = 0;
++  C.pending = NULL;   /* the decoder that owned it is gone */
 +  C.no_picture_run = 0;
 +  C.logged = 0;
 +  C.format_warned = 0;
@@ -1101,7 +1106,7 @@ index 0000000..b354bf6
 +  C.linesize[0] = width;
 +  C.linesize[1] = width / 2;
 +  C.linesize[2] = width / 2;
-+  C.frame_ready = 0;
++  C.pending = NULL;
 +
 +  printf("cedar: %s %dx%d@%d, NV21 -> YV12\n",
 +         C.cfg.codec == CEDAR_CODEC_H265 ? "HEVC" : "H.264", width, height, C.cfg.fps);
@@ -1114,7 +1119,7 @@ index 0000000..b354bf6
 +  C.dec = NULL;
 +  free(C.planes[0]);
 +  C.planes[0] = NULL;
-+  C.frame_ready = 0;
++  C.pending = NULL;
 +  free(C.segs.v);
 +  memset(&C.segs, 0, sizeof(C.segs));
 +}
@@ -1147,9 +1152,10 @@ index 0000000..b354bf6
 +}
 +
 +static int rebuild_decoder(void) {
++  /* Pictures belong to the decoder that produced them; close releases them. */
 +  cedar_close(C.dec);
 +  C.dec = NULL;
-+  C.pending = 0;
++  C.pending = NULL;
 +  C.recreated++;
 +  fprintf(stderr, "cedar: rebuilding decoder\n");
 +  return open_decoder();
@@ -1266,25 +1272,32 @@ index 0000000..b354bf6
 +    C.no_picture_run = STALL_FRAMES;
 +    return;
 +  }
-+  if (cedar_sdl_convert(latest, C.planes[0], C.planes[1], C.planes[2],
-+                        C.linesize[0], C.linesize[1], C.linesize[2]) != 0) {
-+    if (!C.format_warned) {
-+      fprintf(stderr, "cedar: picture format %d cannot be converted\n",
-+              latest->ePixelFormat);
-+      C.format_warned = 1;
-+    }
-+    C.errors++;
-+    cedar_return_picture(C.dec, latest);
-+    return;
-+  }
-+  cedar_return_picture(C.dec, latest);
-+  C.frame_ready = 1;
++
++  /* A picture the presenter never took is stale: drop it, show the newest. */
++  if (C.pending != NULL)
++    cedar_return_picture(C.dec, C.pending);
++  C.pending = latest;
 +}
 +
 +int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]) {
-+  if (!C.frame_ready)
++  if (C.pending == NULL)
 +    return 0;
-+  C.frame_ready = 0;
++
++  if (cedar_sdl_convert(C.pending, C.planes[0], C.planes[1], C.planes[2],
++                        C.linesize[0], C.linesize[1], C.linesize[2]) != 0) {
++    if (!C.format_warned) {
++      fprintf(stderr, "cedar: picture format %d cannot be converted\n",
++              C.pending->ePixelFormat);
++      C.format_warned = 1;
++    }
++    C.errors++;
++    cedar_return_picture(C.dec, C.pending);
++    C.pending = NULL;
++    return 0;
++  }
++  cedar_return_picture(C.dec, C.pending);
++  C.pending = NULL;
++
 +  /* Same shape as AVFrame.data/linesize, which sdl.c already passes on. */
 +  memcpy(planes, C.planes, sizeof(C.planes));
 +  memcpy(linesize, C.linesize, sizeof(C.linesize));
@@ -1355,7 +1368,7 @@ index 0000000..b354bf6
 +    /* Stream buffer full or broken: start over from an IDR frame. */
 +    fprintf(stderr, "cedar: submit failed (%d bytes)\n", du->fullLength);
 +    cedar_reset(C.dec);
-+    C.pending = 0;
++    C.pending_frames = 0;
 +    return DR_NEED_IDR;
 +  }
 +  /*
@@ -1364,8 +1377,8 @@ index 0000000..b354bf6
 +   * none is left. A frame the decoder dropped would leave the count high, so
 +   * it is capped.
 +   */
-+  if (C.pending < 2)
-+    C.pending++;
++  if (C.pending_frames < 2)
++    C.pending_frames++;
 +  deadline = t_submit + PARSE_WAIT_NS;
 +
 +  for (tries = 0; tries < 32; tries++) {
@@ -1376,9 +1389,9 @@ index 0000000..b354bf6
 +    }
 +    ret = cedar_decode(C.dec);
 +    if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED) {
-+      if (C.pending > 0)
-+        C.pending--;
-+      if (C.pending == 0)
++      if (C.pending_frames > 0)
++        C.pending_frames--;
++      if (C.pending_frames == 0)
 +        break;
 +      continue;   /* an older frame: keep going for ours */
 +    }
@@ -1399,7 +1412,7 @@ index 0000000..b354bf6
 +    errors++;
 +    break;
 +  }
-+  if (C.pending > 0)
++  if (C.pending_frames > 0)
 +    errors++;   /* the frame did not finish in time */
 +
 +  if (ret == CEDAR_RESULT_FRAME_DECODED || ret == CEDAR_RESULT_KEYFRAME_DECODED)
@@ -1490,7 +1503,7 @@ index 0000000..cf66bc3
 +
 +#endif
 diff --git a/src/video/sdl.c b/src/video/sdl.c
-index 70640b7..12b79d7 100644
+index e252c2c..7c20dd7 100644
 --- a/src/video/sdl.c
 +++ b/src/video/sdl.c
 @@ -19,6 +19,7 @@
@@ -1501,7 +1514,7 @@ index 70640b7..12b79d7 100644
  
  #include "../sdl.h"
  #include "../util.h"
-@@ -28,6 +29,7 @@
+@@ -28,13 +29,35 @@
  
  #include <unistd.h>
  #include <stdbool.h>
@@ -1509,9 +1522,8 @@ index 70640b7..12b79d7 100644
  
  #define SLICES_PER_FRAME 4
  
-@@ -36,7 +38,28 @@ static size_t ffmpeg_buffer_size;
- /* Receive time of the frame the event below is about, for the latency report. */
- static uint64_t latency_receive_ms;
+ static void* ffmpeg_buffer;
+ static size_t ffmpeg_buffer_size;
  
 +/*
 + * MOONLIGHT_HWDEC=1 decodes with the device's Cedar VPU (tg5040). Anything
@@ -1538,7 +1550,7 @@ index 70640b7..12b79d7 100644
    if (ffmpeg_init(videoFormat, width, height, SLICE_THREADING, SDL_BUFFER_FRAMES, SLICES_PER_FRAME) < 0) {
      fprintf(stderr, "Couldn't initialize video decoding\n");
      return -1;
-@@ -48,6 +71,11 @@ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, voi
+@@ -46,6 +69,11 @@ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, voi
  }
  
  static void sdl_cleanup() {
@@ -1550,33 +1562,40 @@ index 70640b7..12b79d7 100644
    ffmpeg_destroy();
  }
  
-@@ -55,6 +83,29 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+@@ -53,6 +81,36 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
    PLENTRY entry = decodeUnit->bufferList;
    int length = 0;
  
 +  /* YV12 planes for the decoded picture, passed to the frame event below. */
 +  static unsigned char* cedar_planes[3];
 +  static int cedar_linesize[3];
-+  static uint64_t cedar_receive_ms;
 +
 +  if (hwdec) {
 +    int status = cedar_sdl_submit(decodeUnit);
 +
++    /*
++     * Convert under the SDL mutex: the conversion writes the buffer the
++     * texture upload reads on the main thread. The event then carries what
++     * the FFmpeg path carries -- data1 the plane pointers, data2 their
++     * linesizes -- because that is what sdl_loop() hands to
++     * SDL_UpdateYUVTexture.
++     */
++    SDL_LockMutex(mutex);
 +    if (cedar_sdl_frame(cedar_planes, cedar_linesize)) {
 +      sdlNextFrame++;
-+      cedar_receive_ms = cedar_sdl_receive_ms();
 +
 +      SDL_Event event;
 +      event.type = SDL_USEREVENT;
 +      event.user.code = SDL_CODE_FRAME;
 +      event.user.data1 = cedar_planes;
-+      /* The frame's receive time, as the FFmpeg path passes it. */
-+      event.user.data2 = sdlLatencyDebug ? &cedar_receive_ms : NULL;
++      event.user.data2 = cedar_linesize;
++      sdl_latency_receive(cedar_sdl_receive_ms());
 +      SDL_PushEvent(&event);
 +    }
++    SDL_UnlockMutex(mutex);
 +    return status;
 +  }
 +
-   if (sdlLatencyDebug)
-     latency_receive_ms = decodeUnit->receiveTimeMs;
+   sdl_latency_receive(decodeUnit->receiveTimeMs);
  
+   ensure_buf_size(&ffmpeg_buffer, &ffmpeg_buffer_size, decodeUnit->fullLength + AV_INPUT_BUFFER_PADDING_SIZE);

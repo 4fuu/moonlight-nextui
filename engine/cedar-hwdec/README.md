@@ -18,7 +18,7 @@ Pro). Files keep their upstream SPDX headers; local changes are listed below.
 | `src/cedar/cedar.c/.h` | tsp | dlopen wrapper for `libvdecoder.so` (no link-time vendor deps); also the engine's copy |
 | `src/cedar/cedar_sync.c/.h` | tsp | blocking `SemTimedWait` that replaces the vendor polling one |
 | `src/video/cedar_sdl.c/.h` | port of tsp `video_cedar.c` | the engine-side backend: decode → YV12 → SDL frame event |
-| `tests/test_cedar_convert.c`, `tests/test_cedar_fallback.c`, `tests/test_cedar_init.c` | this repo | host tests for the conversion, the fallback contract and the init path (mock vendor libraries) |
+| `tests/test_cedar_convert.c`, `test_cedar_fallback.c`, `test_cedar_init.c`, `test_cedar_frame.c` | this repo | host tests for the conversion, the fallback contract, the init path (mock vendor libraries) and the frame payload/pixels the SDL backend receives |
 | `src/ion.c/.h`, `src/disp.c/.h`, `src/g2d_rot.c/.h` | tsp | used by the tool's optional `-d` / `-G` experiments only |
 | `tools/tsp-videotest.c` | tsp | the decode tool |
 | `tools/spike/README-device.txt` | this repo | what to run on the device and which lines to send back |

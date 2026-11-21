@@ -38,7 +38,8 @@ common-c receive thread
                  → DecodeVideoStream → RequestPicture
          picture is NV21 in ION memory
          → cedar_sdl_convert(): deinterleave VU → YV12 planes
-         → SDL_USEREVENT(SDL_CODE_FRAME) → SDL_UpdateYUVTexture
+         → SDL_USEREVENT(SDL_CODE_FRAME): data1 = planes, data2 = linesizes
+         → SDL_UpdateYUVTexture
        otherwise        → ffmpeg.c (unchanged)
 ```
 
@@ -133,9 +134,17 @@ place:
    submit instead of the spike's 3.7 ms.
 6. **Latency report** (`latency-debug.patch`) — measured per frame at present
    time (present time minus that frame's own receive time), aggregated over 60
-   samples with avg/min/p50/p95/max; the Cedar path feeds the same event field
-   as FFmpeg. See the patch header for why the earlier shared-counter design
-   reported the window span instead of the latency.
+   samples with avg/min/p50/p95/max. The receive time travels in its own
+   atomic word via `sdl_latency_receive()`; the frame event keeps its payload
+   (data1 planes, data2 linesizes) because that is what `sdl_loop()` passes to
+   `SDL_UpdateYUVTexture`. An earlier version put the timestamp in data2 and
+   the picture came out garbled on device — the present side read strides out
+   of it. `engine.yml` now asserts the payload shape for both decoders.
+7. **`cedar_sdl.c` frame hand-off** — the decoded picture waits in the backend
+   until `cedar_sdl_frame()` converts it, and `src/video/sdl.c` calls that
+   while holding the SDL mutex, so a conversion can never rewrite the buffer
+   that the texture upload is reading. A picture the presenter never took is
+   returned to the decoder when the next one arrives.
 
 ## Verification
 
