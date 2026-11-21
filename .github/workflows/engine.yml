@@ -190,10 +190,11 @@ jobs:
           curl -fsSL --retry 3 -o curl.tar.xz "https://curl.se/download/curl-$CURL_VERSION.tar.xz"
           tar xf curl.tar.xz
           cd "curl-$CURL_VERSION"
-          # --with-openssl=<dir> compiles against that OpenSSL directly and
-          # bypasses pkg-config: the image's PKG_CONFIG_SYSROOT_DIR rewrites
-          # every -I to <sysroot>/..., and the sysroot ships OpenSSL 1.1.
-          ./configure \
+          # The image's PKG_CONFIG_SYSROOT_DIR rewrites every -I into the
+          # sysroot, which ships OpenSSL 1.1; with PKG_CONFIG unset, curl uses
+          # the --with-openssl directory directly for headers and libs.
+          grep -q '^# *define OPENSSL_VERSION_STR "3.3.1"' "$PREFIX/include/openssl/opensslv.h"
+          PKG_CONFIG= ./configure \
             --host="$CROSS_TRIPLE" \
             --prefix="$PREFIX" \
             --with-openssl="$PREFIX" \
