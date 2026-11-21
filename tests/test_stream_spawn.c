@@ -191,6 +191,21 @@ static void test_exit_status(void)
     CHECK(ml_stream(&cfg, "App") == 7, "engine exit code reaches the caller");
 }
 
+static void test_no_engine_no_stream(void)
+{
+    printf("rejected config\n");
+    reset_logs();
+
+    /* A config with no active server returns before the engine and before the
+     * stream CPU speed is raised, so it cannot leave the CPU at performance.
+     * The host setter is a no-op; the device ordering is proven on the tg5040
+     * build. */
+    ml_config cfg = base_config();
+    cfg.active_server = -1;
+    CHECK(ml_stream(&cfg, "App") == -1, "a rejected config returns -1");
+    CHECK(access(argv_log, F_OK) != 0, "no engine runs for a rejected config");
+}
+
 static void test_process_group(void)
 {
     printf("process group\n");
@@ -421,6 +436,7 @@ int main(void)
 
     test_argv_transparency();
     test_exit_status();
+    test_no_engine_no_stream();
     test_process_group();
     test_config_format();
     test_cooperation_state();
