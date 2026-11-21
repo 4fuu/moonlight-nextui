@@ -297,6 +297,13 @@ jobs:
             "Libs: -lavahi-common" \
             "Cflags: -DHAVE_AVAHI" \
             > "$PREFIX/lib/pkgconfig/avahi-common.pc"
+          # The sysroot has no avahi runtime either. Link against the aarch64
+          # libraries the pak already bundles (focal avahi 0.8, soname .so.3,
+          # the ABI these headers describe); the closure collector then ships
+          # them next to libgamestream.
+          for lib in avahi-client avahi-common; do
+            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/lib$lib.so.3" "$PREFIX/lib/lib$lib.so"
+          done
           PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
             pkg-config --cflags --libs avahi-client
 
