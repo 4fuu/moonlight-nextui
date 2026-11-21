@@ -1370,10 +1370,10 @@ index 0000000..ac93cae
 +}
 diff --git a/src/video/cedar_sdl.h b/src/video/cedar_sdl.h
 new file mode 100644
-index 0000000..5e6e0f5
+index 0000000..7680d6b
 --- /dev/null
 +++ b/src/video/cedar_sdl.h
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,52 @@
 +/*
 + * Cedar hardware decode feeding the SDL YV12 texture.
 + *
@@ -1404,10 +1404,6 @@ index 0000000..5e6e0f5
 +int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, size_t errlen);
 +
 +void cedar_sdl_destroy(void);
-+
-+/* Converts the next decoded picture to YV12; 0 on success. */
-+int cedar_sdl_render(unsigned char* y, unsigned char* u, unsigned char* v,
-+                     int y_stride, int u_stride, int v_stride);
 +
 +/*
 + * Converts a decoded picture to YV12 (luma, then U and V). The picture's

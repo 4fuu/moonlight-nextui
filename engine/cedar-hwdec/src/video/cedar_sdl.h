@@ -29,10 +29,6 @@ int cedar_sdl_init(int video_format, int width, int height, int fps, char* err, 
 
 void cedar_sdl_destroy(void);
 
-/* Converts the next decoded picture to YV12; 0 on success. */
-int cedar_sdl_render(unsigned char* y, unsigned char* u, unsigned char* v,
-                     int y_stride, int u_stride, int v_stride);
-
 /*
  * Converts a decoded picture to YV12 (luma, then U and V). The picture's
  * visible rectangle is copied, interleaved chroma is deinterleaved (NV21 V
