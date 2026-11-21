@@ -257,6 +257,48 @@ jobs:
           cd /build
           ccache --show-stats
 
+      - name: Provide avahi-client for the build
+        run: |
+          set -e
+          # libgamestream requires avahi-client (mDNS host discovery) at
+          # configure time. The vendor sysroot has no Avahi, so mirror the
+          # build interface of libavahi-client-dev: the public headers and
+          # avahi-client.pc. Only -lavahi-client/-lavahi-common are linked,
+          # and avahi needs nothing newer than glibc 2.17.
+          AVAHI_URL="https://raw.githubusercontent.com/lathiat/avahi/v0.8"
+          mkdir -p "$PREFIX/include/avahi-client" "$PREFIX/include/avahi-common" \
+                   "$PREFIX/lib/pkgconfig"
+          for h in client lookup; do
+            curl -fsSL --retry 3 -o "$PREFIX/include/avahi-client/$h.h" \
+              "$AVAHI_URL/avahi-client/$h.h"
+          done
+          for h in address alternative cdecl dbus-watch-glue dbus defs domain error \
+                   gccmacro i18n llist malloc rlist simple-watch strlst thread-watch \
+                   timeval utf8 watch; do
+            curl -fsSL --retry 3 -o "$PREFIX/include/avahi-common/$h.h" \
+              "$AVAHI_URL/avahi-common/$h.h"
+          done
+          # The image's pkg-config prefixes every -I with the sysroot, so
+          # these files carry no -I: cmake finds the headers through
+          # CMAKE_PREFIX_PATH and the compiler through CMAKE_C_FLAGS.
+          for pc in avahi-client avahi-common; do
+            printf '%s\n' \
+              "prefix=$PREFIX" \
+              "Name: $pc" \
+              "Description: Avahi mDNS/DNS-SD $pc API" \
+              "Version: 0.8" \
+              "Libs: -l$pc" \
+              "Cflags: -DHAVE_AVAHI" \
+              > "$PREFIX/lib/pkgconfig/$pc.pc"
+          done
+          # Link against the aarch64 Avahi the pak already bundles; the
+          # closure collector ships it next to libgamestream.
+          for lib in avahi-client avahi-common; do
+            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/lib$lib.so.3" "$PREFIX/lib/lib$lib.so"
+          done
+          PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
+            pkg-config --cflags --libs avahi-client
+
       - name: Build moonlight-embedded
         run: |
           set -e
@@ -276,7 +318,7 @@ jobs:
             -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
             -DCMAKE_PREFIX_PATH="$PREFIX" \
-            -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections" \
+            -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections -I$PREFIX/include" \
             -DENABLE_X11=OFF \
             -DENABLE_PULSE=OFF
           make -j"$(nproc)" 2>&1 | tee build.log
