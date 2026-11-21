@@ -285,7 +285,7 @@ jobs:
             "Version: 0.8" \
             "Requires: avahi-common" \
             "Libs: -lavahi-client" \
-            "Cflags: -isystem \${includedir}" \
+            "Cflags: -I\${includedir}" \
             > "$PREFIX/lib/pkgconfig/avahi-client.pc"
           printf '%s\n' \
             "prefix=$PREFIX" \
@@ -294,7 +294,7 @@ jobs:
             "Description: Avahi mDNS/DNS-SD common definitions" \
             "Version: 0.8" \
             "Libs: -lavahi-common" \
-            "Cflags: -isystem \${includedir}" \
+            "Cflags: -I\${includedir}" \
             > "$PREFIX/lib/pkgconfig/avahi-common.pc"
           PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
             pkg-config --cflags --libs avahi-client
