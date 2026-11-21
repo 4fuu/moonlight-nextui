@@ -341,16 +341,22 @@ jobs:
           # cedar_sync.c must interpose the vendor SemTimedWait: libcdc_base and
           # libsbm look it up dynamically, so it has to be in the executable's
           # dynamic symbol table (ENABLE_EXPORTS -> -rdynamic), not only local.
+          # (Dump to files first: `producer | grep -q` would kill the producer
+          # with SIGPIPE, and this step runs with pipefail.)
           grep -q -- '-rdynamic' CMakeFiles/moonlight.dir/link.txt
-          "${CROSS_TRIPLE}-readelf" -s --dyn-syms moonlight | grep -qw SemTimedWait
+          "${CROSS_TRIPLE}-readelf" -s --dyn-syms moonlight > /tmp/cedar-dynsyms.txt
+          grep -qw SemTimedWait /tmp/cedar-dynsyms.txt
           # Hardware decode, when enabled: the Cedar sources are linked in and
           # the switch is in the binary.
           grep -q 'ENABLE_CEDAR:BOOL=ON' CMakeCache.txt
-          strings moonlight | grep -q 'MOONLIGHT_HWDEC'
-          strings moonlight | grep -q 'cedar: %s %dx%d@%d, NV21 -> YV12'
-          "${CROSS_TRIPLE}-readelf" -s moonlight | grep -qw cedar_sdl_init
+          strings moonlight > /tmp/cedar-strings.txt
+          grep -q 'MOONLIGHT_HWDEC' /tmp/cedar-strings.txt
+          grep -q 'cedar: %s %dx%d@%d, NV21 -> YV12' /tmp/cedar-strings.txt
+          "${CROSS_TRIPLE}-readelf" -s moonlight > /tmp/cedar-syms.txt
+          grep -qw cedar_sdl_init /tmp/cedar-syms.txt
           # Cedar is dlopen()ed: no vendor library may become a link dependency.
-          ! "${CROSS_TRIPLE}-readelf" -d moonlight | grep -E 'libvdecoder|libvideoengine|libawh|libVE'
+          "${CROSS_TRIPLE}-readelf" -d moonlight > /tmp/cedar-dyn.txt
+          ! grep -E 'libvdecoder|libvideoengine|libawh|libVE' /tmp/cedar-dyn.txt
           # The build must have compiled SDL (not X11/EGL) as its video backend.
           grep -q 'HAVE_SDL' CMakeFiles/moonlight.dir/flags.make
           ! grep -q 'HAVE_X11\|HAVE_PI\|HAVE_AML\|HAVE_IMX\|HAVE_ROCKCHIP\|HAVE_MMAL' \
