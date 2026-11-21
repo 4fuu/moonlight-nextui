@@ -337,7 +337,7 @@ jobs:
             "Description: PulseAudio Simple API" \
             "Version: $PULSE_VER" \
             "Requires: libpulse" \
-            "Libs: -lpulse-simple -lpulse" \
+            "Libs: -L${prefix}/lib -lpulse-simple -lpulse" \
             "Cflags: -DHAVE_PULSE" \
             > "$PREFIX/lib/pkgconfig/libpulse-simple.pc"
           printf '%s\n' \
@@ -345,12 +345,17 @@ jobs:
             "Name: libpulse" \
             "Description: PulseAudio client interface" \
             "Version: $PULSE_VER" \
-            "Libs: -lpulse" \
+            "Libs: -L${prefix}/lib -lpulse" \
             "Cflags: -DHAVE_PULSE" \
             > "$PREFIX/lib/pkgconfig/libpulse.pc"
           for lib in libpulse-simple.so.0 libpulse.so.0; do
             ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/$lib" "$PREFIX/lib/${lib%.so.0}.so"
           done
+          # libpulse needs libpulsecommon at link time; same location the
+          # closure collection uses.
+          mkdir -p "$PREFIX/lib/pulseaudio"
+          ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/libpulsecommon-13.99.so" \
+            "$PREFIX/lib/pulseaudio/libpulsecommon-13.99.so"
           ls "$PREFIX/lib/libpulse"*
 
       - name: Build moonlight-embedded
@@ -363,8 +368,9 @@ jobs:
           # from-source libs are linked through CMAKE_PREFIX_PATH.
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
           # -L$PREFIX/lib for the avahi -l flags; rpath-link so the linker
-          # resolves libavcodec's NEEDED libswresample in the same prefix.
-          export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib"
+          # resolves NEEDED libraries (libavcodec's libswresample,
+          # libpulse's libpulsecommon) inside the same prefix.
+          export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib/pulseaudio"
           mkdir -p "$MOONLIGHT_SRC/build"
           cd "$MOONLIGHT_SRC/build"
           cmake .. \
