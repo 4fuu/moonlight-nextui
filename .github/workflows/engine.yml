@@ -308,9 +308,9 @@ jobs:
           # stays rooted at $CROSS_ROOT; the sysroot is below it and the
           # from-source libs are linked through CMAKE_PREFIX_PATH.
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
-          # rpath-link so the linker resolves libavcodec's NEEDED
-          # libswresample in the same prefix.
-          export LDFLAGS="-Wl,--gc-sections -Wl,-rpath-link,$PREFIX/lib"
+          # -L$PREFIX/lib for the avahi -l flags; rpath-link so the linker
+          # resolves libavcodec's NEEDED libswresample in the same prefix.
+          export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib"
           mkdir -p "$MOONLIGHT_SRC/build"
           cd "$MOONLIGHT_SRC/build"
           cmake .. \
