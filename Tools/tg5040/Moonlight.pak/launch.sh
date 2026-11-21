@@ -67,8 +67,70 @@ if [ -r "$CA_BUNDLE" ]; then
     export CURL_CA_BUNDLE SSL_CERT_FILE
 fi
 
+# Optional user overrides, sourced last so they win over the defaults above
+# (e.g. `export SDL_RENDER_VSYNC=0` for on-device A/B tests). The shim execs
+# the engine from this environment, so the variables reach it.
+USER_ENV="$SHARED_USERDATA_PATH/moonlight/env.sh"
+if [ -f "$USER_ENV" ] && [ -r "$USER_ENV" ]; then
+    # shellcheck source=/dev/null
+    . "$USER_ENV"
+    echo "env=$USER_ENV sourced"
+fi
+
 echo "path=$PATH"
 echo "keydir=$MOONLIGHT_KEY_DIR ca=$CA_BUNDLE"
+
+# ── WiFi power save ─────────────────────────────────────────────────────────
+#
+# With power save on, wlan0 latency averages ~23ms; off it drops to ~5-9ms,
+# which is the difference between a smooth stream and a stuttering one. Turn it
+# off for the run and put the previous state back afterwards. Every step is
+# best effort: a missing iw/wlan0 or a failed call just leaves the radio alone.
+
+WLAN_IFACE=wlan0
+POWER_SAVE_CHANGED=0
+
+wifi_power_save_restore() {
+    [ "$POWER_SAVE_CHANGED" = "1" ] || return 0
+    POWER_SAVE_CHANGED=0
+    if iw dev "$WLAN_IFACE" set power_save "$POWER_SAVE_PREVIOUS" 2>/dev/null; then
+        echo "wifi power_save restored to $POWER_SAVE_PREVIOUS on $WLAN_IFACE"
+    else
+        echo "wifi power_save restore to $POWER_SAVE_PREVIOUS failed on $WLAN_IFACE"
+    fi
+    return 0
+}
+
+# Signals must not end the script before the session helper's own EXIT
+# cleanup has run, so record the signal and let the script finish normally:
+# the restore below runs inline at the end of the script body, before the
+# helper's EXIT trap. (A signal that arrives while the app runs is handled once
+# the app returns, so the launcher never exits out from under the app.)
+LAUNCH_SIGNAL=""
+for LAUNCH_SIGNAL_NAME in HUP INT TERM; do
+    trap 'LAUNCH_SIGNAL='"$LAUNCH_SIGNAL_NAME" "$LAUNCH_SIGNAL_NAME"
+done
+
+if command -v iw >/dev/null 2>&1 && iw dev "$WLAN_IFACE" info >/dev/null 2>&1; then
+    POWER_SAVE_CURRENT=$(iw dev "$WLAN_IFACE" get power_save 2>/dev/null)
+    POWER_SAVE_PREVIOUS=${POWER_SAVE_CURRENT##* }
+    case "$POWER_SAVE_PREVIOUS" in
+        on)
+            if iw dev "$WLAN_IFACE" set power_save off 2>/dev/null; then
+                POWER_SAVE_CHANGED=1
+                echo "wifi power_save off on $WLAN_IFACE (was on)"
+            else
+                echo "wifi power_save off failed on $WLAN_IFACE"
+            fi
+            ;;
+        off)
+            echo "wifi power_save already off on $WLAN_IFACE"
+            ;;
+        *)
+            echo "wifi power_save state unknown on $WLAN_IFACE: ${POWER_SAVE_CURRENT:-no output}"
+            ;;
+    esac
+fi
 
 # ── C3 session ──────────────────────────────────────────────────────────────
 
@@ -85,6 +147,18 @@ else
     # Older NextUI / desktop preview: no session backend, run in foreground.
     "$PAK_DIR/$APP_BIN"
     APP_RC=$?
+fi
+
+# Restore before the exit below, so the helper's EXIT trap still runs after it
+# and the cleanup never depends on trap order.
+wifi_power_save_restore
+if [ -n "$LAUNCH_SIGNAL" ]; then
+    echo "interrupted by SIG$LAUNCH_SIGNAL"
+    case "$LAUNCH_SIGNAL" in
+        HUP) APP_RC=129 ;;
+        INT) APP_RC=130 ;;
+        TERM) APP_RC=143 ;;
+    esac
 fi
 
 echo "=== Moonlight.pak exit rc=$APP_RC $(date) ==="
