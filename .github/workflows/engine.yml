@@ -190,6 +190,9 @@ jobs:
           curl -fsSL --retry 3 -o curl.tar.xz "https://curl.se/download/curl-$CURL_VERSION.tar.xz"
           tar xf curl.tar.xz
           cd "curl-$CURL_VERSION"
+          # --with-openssl=<dir> compiles against that OpenSSL directly and
+          # bypasses pkg-config: the image's PKG_CONFIG_SYSROOT_DIR rewrites
+          # every -I to <sysroot>/..., and the sysroot ships OpenSSL 1.1.
           ./configure \
             --host="$CROSS_TRIPLE" \
             --prefix="$PREFIX" \
@@ -203,6 +206,9 @@ jobs:
             LDFLAGS="$LDFLAGS -Wl,-rpath-link,$PREFIX/lib"
           make -j"$(nproc)"
           make install
+          # The build must link our OpenSSL 3, not the sysroot's 1.1.
+          "$CROSS_TRIPLE-readelf" -d lib/.libs/libcurl.so.4 | grep NEEDED
+          "$CROSS_TRIPLE-readelf" -d lib/.libs/libcurl.so.4 | grep -q 'libcrypto.so.3'
           cd /build
 
           echo "=== FFmpeg $FFMPEG_VERSION ==="
