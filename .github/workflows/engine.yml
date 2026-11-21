@@ -356,17 +356,47 @@ jobs:
           mkdir -p "$PREFIX/lib/pulseaudio"
           ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/libpulsecommon-13.99.so" \
             "$PREFIX/lib/pulseaudio/libpulsecommon-13.99.so"
-          # libpulsecommon's NEEDED libraries are the pak's own copies (the
-          # device set), so put them in the prefix for the link step and for
-          # the closure check.
-          for lib in libxcb.so.1 libsystemd.so.0 libwrap.so.0 libsndfile.so.1 \
-                     libasyncns.so.0 libdbus-1.so.3; do
-            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/$lib" "$PREFIX/lib/$lib"
+          # libpulsecommon's own NEEDED libraries (systemd, xcb, ...) come from
+          # the focal arm64 packages the next step installs.
+          ls "$PREFIX/lib/libpulse"*
+
+      - name: Provide the focal arm64 libraries the engine links against
+        run: |
+          set -e
+          # spruce links libpulse-dev:arm64 from Ubuntu 20.04, so the build
+          # sees focal's libsystemd and libxcb. The vendor sysroot has neither,
+          # and its older libdbus-1/libsndfile would not match the pak's
+          # pulse/common tail. Install the focal release packages the pak's
+          # library set is documented to come from (docs/THIRD-PARTY.md):
+          # headers for the build interface, runtime libraries for linking
+          # and the closure. Unpacking debs needs no emulation.
+          mkdir -p /tmp/focal/debs
+          cd /tmp/focal
+          while read -r sum url; do
+            file="debs/$(basename "$url")"
+            curl -fsSL --retry 3 -o "$file" "$url"
+            echo "$sum  $file" | sha256sum -c -
+            dpkg-deb -x "$file" root
+          done <<'DEBS'
+          d5160c016f2d867e08a2a63ee4d039a77a9f5bf985617fae311ae61afdcb7bc6  http://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd-dev_245.4-4ubuntu3_arm64.deb
+          3d69db8f1f044a48ab5fe0c3e32c3996d1bc5d2f8cae61022d17c3d55bf9b011  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb1-dev_1.14-2_arm64.deb
+          69c8db9a78e55302ba359b889c1be9d0c901d7bc13cef8776cb9119f5125b465  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxau/libxau-dev_1.0.9-0ubuntu1_arm64.deb
+          92520a205afefb021bd89a06a377a641a64a8072c9ae6a5c36f89fde9d637646  http://ports.ubuntu.com/ubuntu-ports/pool/main/s/systemd/libsystemd0_245.4-4ubuntu3_arm64.deb
+          88e171a33249719366a4e29330775e2ac777226f1f379557daf0777083a1fc93  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxcb/libxcb1_1.14-2_arm64.deb
+          0f19eb67992cf9a755a781502529750841d93fb8729691df02b9b16aec845b40  http://ports.ubuntu.com/ubuntu-ports/pool/main/libx/libxau/libxau6_1.0.9-0ubuntu1_arm64.deb
+          DEBS
+          for h in systemd/sd-daemon.h xcb/xcb.h xcb/xcbext.h xcb/xproto.h \
+                   X11/Xauth.h; do
+            mkdir -p "$PREFIX/include/$(dirname "$h")"
+            cp "/tmp/focal/root/usr/include/$h" "$PREFIX/include/$h"
           done
-          for lib in libxcb libsystemd libwrap libsndfile libasyncns libdbus-1; do
+          for lib in libsystemd.so.0 libxcb.so.1 libXau.so.6; do
+            cp -L "/tmp/focal/root/lib/aarch64-linux-gnu/$lib" "$PREFIX/lib/$lib"
+          done
+          for lib in libsystemd libxcb libXau; do
             ln -sf "$PREFIX/lib/$lib.so."* "$PREFIX/lib/$lib.so"
           done
-          ls "$PREFIX/lib/libpulse"*
+          ls -l "$PREFIX/lib/libsystemd.so" "$PREFIX/lib/libxcb.so" "$PREFIX/lib/libXau.so"
 
       - name: Build moonlight-embedded
         run: |
