@@ -37,14 +37,25 @@ common-c receive thread
          CedarC: RequestVideoStreamBuffer → SubmitVideoStreamData
                  → DecodeVideoStream → RequestPicture
          picture is NV21 in ION memory
-         → cedar_sdl_render(): deinterleave VU → YV12 planes
+         → cedar_sdl_convert(): deinterleave VU → YV12 planes
          → SDL_USEREVENT(SDL_CODE_FRAME) → SDL_UpdateYUVTexture
        otherwise        → ffmpeg.c (unchanged)
 ```
 
-`cedar_sdl.c` runs on common-c's decoder thread. Because the SDL callbacks are
-unchanged, common-c keeps `CAPABILITY_DIRECT_SUBMIT`, exactly as with FFmpeg:
-one thread submits, the SDL thread presents.
+Because the SDL callbacks are unchanged, common-c keeps
+`CAPABILITY_DIRECT_SUBMIT`. That capability means common-c creates **no**
+`VideoDec` thread (`VideoStream.c`: the thread is only started when
+`DIRECT_SUBMIT | PULL_RENDERER` are both clear) and the RTP receive thread calls
+`submitDecodeUnit()` itself. So the Cedar decode (~3.7 ms measured on the
+device) plus the NV21→YV12 conversion run on the receive thread, inside the
+16.7 ms frame budget. That is fine on paper and matched the spike's per-frame
+cost, but it has not been confirmed with a live stream: the device run must
+look at the `VideoRecv` thread's CPU split between receive and decode.
+
+If that thread turns out to be the bottleneck, dropping the capability
+(`.capabilities = 0`) moves the same work to common-c's dedicated decoder
+thread behind its 15-frame bounded queue; that is a one-line change in
+`sdl.c` and the fallback path to try, not something this patch does.
 
 Selection is one environment variable, read in `sdl_setup()`:
 
@@ -57,8 +68,7 @@ launcher opts in.
 
 ## Files
 
-Engine-side (applied to moonlight-embedded `7754442`, copied into its tree by
-the workflow):
+Engine-side (one patch in `engine/patches/`, applied by `engine.yml`):
 
 | Path | Purpose |
 |---|---|
@@ -153,6 +163,10 @@ current FFmpeg build, at 1280x720@60, one 5-minute session each:
 - If the picture is decoded but looks wrong (colour channel swap), the
   conversion's VU order is the first thing to check; the spike reported NV21
   on the Smart Pro, and `cedar_sdl_convert()` handles both NV21 and NV12.
+- Thread profile (`top -H` or the hang log's threads) of the engine process:
+  `VideoRecv` now carries receive + Cedar decode + conversion. Compare its CPU
+  with the FFmpeg build's `VideoRecv`/`VideoDec` pair; if `VideoRecv` is
+  saturated, switch the callbacks to `capabilities = 0`.
 
 Rollback is unsetting `MOONLIGHT_HWDEC`; no binary swap is needed.
 
