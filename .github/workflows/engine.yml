@@ -475,7 +475,8 @@ jobs:
                 qemu-aarch64-static "$OUT/moonlight" help 2>&1)
           echo "$out" | head -40
           echo "$out" | grep -q '^Moonlight Embedded 2\.7\.0'
-          echo "$out" | grep -q 'Options:'
+          # The usage text says " Global Options" (no colon).
+          echo "$out" | grep -q 'Global Options'
           echo "$out" | grep -q 'SDL'
 
       - name: Write the manifest
