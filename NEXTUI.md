@@ -1,8 +1,9 @@
 # NextUI port (TrimUI Brick / tg5040)
 
 Moonlight game streaming for NextUI, built from source in this repository.
-The streaming engine is the spruce 2.7.0 moonlight-embedded build, bundled
-unmodified; everything else — the Apostrophe UI wrapper, the launcher, the
+The streaming engine is moonlight-embedded 2.7.0, rebuilt in CI from source
+with the patches in `engine/patches/` (one-frame buffer, latency trace, Cedar
+hardware decode); everything else — the Apostrophe UI wrapper, the launcher, the
 cooperation seam, and the full-fidelity overlay renderer — is built here.
 
 - Upstream wrapper: <https://github.com/richieszemeredi/nextui-moonlight-pak> (MIT)
@@ -26,6 +27,8 @@ cooperation seam, and the full-fidelity overlay renderer — is built here.
 | Sleep/wake handshake + stream inhibit | done, M4 |
 | Battery/status rows from the SDK | done, M5 |
 | Streaming-time HOME ownership (dynamic) | done, M6 |
+| Engine rebuilt from source, one-frame buffer (`feat/engine-buffer-1`) | done, `engine.yml` |
+| Cedar hardware decode, on by default (`feat/engine-cedar-hwdec`) | done, device-verified; `docs/cedar-hwdec.md` |
 | Device acceptance (handshake, panel, HUD) | **pending owner test** |
 
 The wrapper now links `nextui-app-sdk` at `27e5597` and implements the
