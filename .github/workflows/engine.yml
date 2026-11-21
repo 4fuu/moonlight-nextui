@@ -254,6 +254,46 @@ jobs:
           cd /build
           ccache --show-stats
 
+      - name: Provide avahi-client for the build
+        run: |
+          set -e
+          # The vendor sysroot has no Avahi, and moonlight's libgamestream
+          # requires avahi-client (mDNS host discovery, which spruce gets from
+          # libavahi-client-dev:arm64). Mirror that package's build interface:
+          # its headers plus avahi-client.pc. The runtime libraries come from
+          # the sysroot via the closure collection.
+          D="$PREFIX/include/avahi"
+          mkdir -p "$D/avahi-client" "$D/avahi-common" "$PREFIX/lib/pkgconfig"
+          for h in avahi-client/client.h avahi-client/lookup.h; do
+            curl -fsSL --retry 3 -o "$D/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
+          done
+          for h in avahi-common/simple-watch.h avahi-common/malloc.h avahi-common/error.h \
+                   avahi-common/address.h avahi-common/defs.h avahi-common/cdecl.h; do
+            curl -fsSL --retry 3 -o "$D/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
+          done
+          # isystem: the image's PKG_CONFIG_SYSROOT_DIR prefixes -I paths.
+          printf '%s\n' \
+            "prefix=$PREFIX" \
+            "includedir=\${prefix}/include" \
+            "Name: avahi-client" \
+            "Description: Avahi mDNS/DNS-SD client API" \
+            "Version: 0.8" \
+            "Requires: avahi-common" \
+            "Libs: -lavahi-client" \
+            "Cflags: -isystem \${includedir}" \
+            > "$PREFIX/lib/pkgconfig/avahi-client.pc"
+          printf '%s\n' \
+            "prefix=$PREFIX" \
+            "includedir=\${prefix}/include" \
+            "Name: avahi-common" \
+            "Description: Avahi mDNS/DNS-SD common definitions" \
+            "Version: 0.8" \
+            "Libs: -lavahi-common" \
+            "Cflags: -isystem \${includedir}" \
+            > "$PREFIX/lib/pkgconfig/avahi-common.pc"
+          PKG_CONFIG_SYSROOT_DIR= pkg-config --exists avahi-client
+          PKG_CONFIG_SYSROOT_DIR= pkg-config --cflags --libs avahi-client
+
       - name: Build moonlight-embedded
         run: |
           set -e
