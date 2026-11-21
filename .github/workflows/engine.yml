@@ -1,0 +1,470 @@
+name: Build moonlight-embedded engine
+
+# Rebuilds the bundled spruce engine (moonlight-embedded 274d3db3, "2.7.0")
+# for tg5040 with the patches in engine/patches/, following spruce's
+# Moonlight-spruce build.sh and Dockerfile recipe:
+#
+#   OpenSSL 3.3.1 -> curl 8.7.1 -> minimal FFmpeg 4.4.5 -> moonlight-embedded
+#   (cmake -DENABLE_X11=OFF), then collect moonlight, libmoonlight-common,
+#   libgamestream, the from-source libs and the rest of the shared-library
+#   closure (skipping what the device provides, SDL2 included).
+#
+# It runs on ubuntu-24.04 in the NextUI toolchain container
+# (ghcr.io/loveretro/tg5040-toolchain), the same image the pak build uses, so
+# the engine is built against the vendor sysroot: glibc 2.28, SDL2 2.26.1 dev
+# files and the ALSA/udev/opus/evdev headers the device's SDL2 is built with.
+# The device ships glibc 2.33 and SDL2 2.30.8, both ABI-compatible with what
+# is linked here.
+#
+# Patches (applied in filename order):
+#   sdl-buffer-1.patch    SDL_BUFFER_FRAMES 2 -> 1 (one less frame of latency)
+#   latency-debug.patch   MOONLIGHT_LATENCY_DEBUG=1 prints client latency
+#
+# Output artifact engine-aarch64: moonlight, libs/, manifest.txt, the applied
+# patches and the build logs. manifest.txt maps every file to the pak path it
+# replaces (bin/moonlight, bin/libs/<name>).
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/engine.yml'
+      - 'engine/patches/**'
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  # Spruce's Moonlight-spruce build inputs.
+  MOONLIGHT_COMMIT: 274d3db34da764344a7a402ee74e6080350ac0cd
+  OPENSSL_VERSION: 3.3.1
+  CURL_VERSION: 8.7.1
+  FFMPEG_VERSION: 4.4.5
+  # ccache across all four from-source builds.
+  CCACHE_DIR: /root/.cache/ccache
+  CCACHE_MAXSIZE: 600M
+  # moonpc: package prefix for the from-source libs.
+  PREFIX: /opt/moonpc
+  MOONLIGHT_SRC: /opt/engine-src/moonlight-embedded
+
+jobs:
+  engine:
+    name: Cross-build the engine
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      image: ghcr.io/loveretro/tg5040-toolchain:latest
+      options: --user root
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install build tools
+        run: |
+          set -e
+          for attempt in 1 2 3; do
+            if apt-get update &&
+               apt-get install -y --no-install-recommends \
+                 build-essential bison file flex nasm ccache patch; then
+              break
+            fi
+            echo "apt attempt $attempt failed; retrying"
+            sleep 15
+          done
+          command -v ccache nasm bison file patch
+
+      # The image's toolchain package (crosstool-NG GCC 8.3.0, glibc 2.28) is
+      # the one NextUI's own packages are built with; the matching sysroot SDK
+      # is pulled over it.
+      - name: Install the tg5040 toolchain
+        run: |
+          set -e
+          TC=https://github.com/LoveRetro/gcc-arm-8.3-aarch64-tg5040/releases/download/v8.3.0-20260204-190602-d37268f5
+          SDK=https://github.com/trimui/toolchain_sdk_smartpro/releases/download/20231018/SDK_usr_tg5040_a133p.tgz
+          curl -fsSL --retry 3 -o /tmp/toolchain.tar.xz "$TC/gcc-8.3.0-aarch64-nextui-linux-gnu-x86_64-host.tar.xz"
+          curl -fsSL --retry 3 -o /tmp/sdk.tgz "$SDK"
+          sha256sum -c - <<'SUMS'
+          eae5cd4dedbe2bd41660b0a3a39482ac145bd67e9a61fb620209edf9348699bdc2c2860ba74a812090c66372fd87d791c1be910a41822d3e136740188cc6c9ed  /tmp/toolchain.tar.xz
+          b6b615d03204e9d9bb1a91c31de0c3402434f6b8fc780743fa88a5f1da6f3c79  /tmp/sdk.tgz
+          SUMS
+          mkdir -p "$CROSS_ROOT"
+          tar -xJf /tmp/toolchain.tar.xz -C "$CROSS_ROOT" --strip-components=2
+          mkdir -p "$SYSROOT"
+          tar -xzf /tmp/sdk.tgz -C "$SYSROOT"
+          cp "$GITHUB_WORKSPACE/engine/ci/toolchain-aarch64.cmake" "$CROSS_ROOT/Toolchain.cmake"
+          test "$("$CC" --version | head -1)" = \
+            "aarch64-nextui-linux-gnu-gcc (crosstool-NG 1.25.0) 8.3.0"
+          echo "target glibc: $(grep -oE 'GLIBC_2\.[0-9]+' <("$CROSS_TRIPLE-readelf" -V "$SYSROOT/lib/libc.so.6") | sort -uV | tail -1)"
+          echo "target SDL2: $(pkg-config --modversion sdl2)"
+          for pc in libevdev libudev opus alsa sdl2; do
+            pkg-config --exists "$pc" || { echo "missing pkg-config: $pc" >&2; exit 1; }
+          done
+
+      - name: Apply engine patches
+        run: |
+          set -e
+          git clone https://github.com/moonlight-stream/moonlight-embedded.git "$MOONLIGHT_SRC"
+          git -C "$MOONLIGHT_SRC" checkout --quiet "$MOONLIGHT_COMMIT"
+          git -C "$MOONLIGHT_SRC" submodule update --init --recursive --quiet
+          test "$(git -C "$MOONLIGHT_SRC" rev-parse HEAD)" = "$MOONLIGHT_COMMIT"
+          # moonpc: submodules must be present for libmoonlight-common and ENet.
+          test -f "$MOONLIGHT_SRC/third_party/moonlight-common-c/src/Limelight.h"
+          test -f "$MOONLIGHT_SRC/third_party/moonlight-common-c/enet/CMakeLists.txt"
+          for patch in "$GITHUB_WORKSPACE"/engine/patches/*.patch; do
+            git -C "$MOONLIGHT_SRC" apply --verbose "$patch"
+            echo "applied $(basename "$patch")"
+          done
+          # The one-line change the whole rebuild exists for.
+          grep -n '^#define SDL_BUFFER_FRAMES 1$' "$MOONLIGHT_SRC/src/sdl.h"
+          grep -n 'SDL_LATENCY_SAMPLES' "$MOONLIGHT_SRC/src/sdl.h"
+          git -C "$MOONLIGHT_SRC" diff --stat
+
+      - name: Cache dependency builds
+        id: deps-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.PREFIX }}
+            ${{ env.CCACHE_DIR }}
+          key: engine-deps-${{ runner.os }}-openssl${{ env.OPENSSL_VERSION }}-curl${{ env.CURL_VERSION }}-ffmpeg${{ env.FFMPEG_VERSION }}-gcc8.3.0-tg5040-v1
+
+      - name: Build dependencies
+        run: |
+          set -e
+          if [ -f "$PREFIX/lib/libssl.so.3" ] &&
+             [ -f "$PREFIX/lib/libcurl.so.4" ] &&
+             [ -f "$PREFIX/lib/libavcodec.so.58" ]; then
+            echo "dependencies restored from cache"
+            exit 0
+          fi
+          # Same compiler flags spruce uses; ccache is the second layer on top
+          # of the exact-match cache above.
+          OPTFLAGS="-O3 -ffunction-sections -fdata-sections"
+          LDFLAGS="-Wl,--gc-sections"
+          ccache --max-size="$CCACHE_MAXSIZE"
+          ccache --zero-stats
+          # moonpc: -fPIC for the shared libs (AArch64 shared objects need it).
+          # moonpc: no -flto, because the GCC 8.3 linker in this toolchain has
+          # no lto-plugin for the host side.
+          mkdir -p /build "$PREFIX"
+          cd /build
+
+          echo "=== OpenSSL $OPENSSL_VERSION ==="
+          curl -fsSL --retry 3 -o openssl.tar.gz "https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"
+          tar xzf openssl.tar.gz
+          cd "openssl-$OPENSSL_VERSION"
+          # OpenSSL keeps its own defaults from the cross prefix (the image's
+          # CC/AR are not passed to Configure); no-tests is required for cross
+          # builds, and -fPIC is set explicitly because the AArch64 cross
+          # compiler does not default to it.
+          ./Configure linux-aarch64 \
+            --cross-compile-prefix="$CROSS_TRIPLE-" \
+            --prefix="$PREFIX" \
+            --libdir=lib \
+            shared \
+            no-tests \
+            -O3 -fPIC
+          make -j"$(nproc)" CC="$CROSS_TRIPLE-gcc -fPIC" build_sw
+          make install_sw
+          cd /build
+
+          # From here on CC/CXX/AR drive every configure (spruce does the same).
+          export CC="$CROSS_TRIPLE-gcc" CXX="$CROSS_TRIPLE-g++" AR="$CROSS_TRIPLE-ar"
+
+          echo "=== curl $CURL_VERSION ==="
+          curl -fsSL --retry 3 -o curl.tar.xz "https://curl.se/download/curl-$CURL_VERSION.tar.xz"
+          tar xf curl.tar.xz
+          cd "curl-$CURL_VERSION"
+          ./configure \
+            --host="$CROSS_TRIPLE" \
+            --prefix="$PREFIX" \
+            --with-openssl="$PREFIX" \
+            --without-libpsl \
+            --disable-manual \
+            --disable-ldap \
+            --enable-shared \
+            --disable-static \
+            CFLAGS="$OPTFLAGS -fPIC" \
+            LDFLAGS="$LDFLAGS -Wl,-rpath-link,$PREFIX/lib"
+          make -j"$(nproc)"
+          make install
+          cd /build
+
+          echo "=== FFmpeg $FFMPEG_VERSION ==="
+          curl -fsSL --retry 3 -o ffmpeg.tar.xz "https://ffmpeg.org/releases/ffmpeg-$FFMPEG_VERSION.tar.xz"
+          tar xf ffmpeg.tar.xz
+          cd "ffmpeg-$FFMPEG_VERSION"
+          ./configure \
+            --prefix="$PREFIX" \
+            --cross-prefix="$CROSS_TRIPLE-" \
+            --arch=aarch64 \
+            --target-os=linux \
+            --enable-cross-compile \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-everything \
+            --enable-decoder=h264 \
+            --enable-decoder=hevc \
+            --enable-decoder=opus \
+            --enable-decoder=aac \
+            --enable-decoder=pcm_s16le \
+            --enable-parser=h264 \
+            --enable-parser=hevc \
+            --enable-parser=opus \
+            --enable-parser=aac \
+            --enable-demuxer=h264 \
+            --enable-demuxer=hevc \
+            --enable-demuxer=rtp \
+            --enable-demuxer=rtsp \
+            --enable-protocol=rtp \
+            --enable-protocol=udp \
+            --enable-protocol=tcp \
+            --enable-swresample \
+            --enable-avcodec \
+            --enable-avutil \
+            --extra-cflags="$OPTFLAGS -fPIC" \
+            --extra-ldflags="$LDFLAGS"
+          make -j"$(nproc)"
+          make install
+          cd /build
+          ccache --show-stats
+
+      - name: Build moonlight-embedded
+        run: |
+          set -e
+          # Header discovery: INCLUDE=BOTH lets find_path look in the vendor
+          # sysroot (SDL2, ALSA, udev, opus, evdev, expat, uuid) and in the
+          # from-source prefix, which is searched first. Library discovery
+          # stays rooted at $CROSS_ROOT; the sysroot is below it and the
+          # from-source libs are linked through CMAKE_PREFIX_PATH.
+          export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
+          export CFLAGS="-O3 -ffunction-sections -fdata-sections"
+          export LDFLAGS="-Wl,--gc-sections"
+          mkdir -p "$MOONLIGHT_SRC/build"
+          cd "$MOONLIGHT_SRC/build"
+          cmake .. \
+            -DCMAKE_TOOLCHAIN_FILE="$CMAKE_TOOLCHAIN_FILE" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=BOTH \
+            -DCMAKE_PREFIX_PATH="$PREFIX" \
+            -DENABLE_X11=OFF
+          make -j"$(nproc)" 2>&1 | tee build.log
+          grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
+          grep -E '^(SDL|AVCODEC|AVUTIL|PULSE|EXPAT)_(FOUND|INCLUDE_DIRS|LIBRARIES)|^CURL_(FOUND|INCLUDE_DIR|LIBRARY)|^OPENSSL_(FOUND|INCLUDE_DIR|LIBRARIES)' CMakeCache.txt || true
+          # The from-source FFmpeg must be the one linked, not a sysroot copy.
+          grep -q "^AVCODEC_LIBRARIES:INTERNAL=.*$PREFIX" CMakeCache.txt
+          grep -q "^SDL_INCLUDE_DIRS:INTERNAL=.*$SYSROOT" CMakeCache.txt
+          test -x moonlight
+          # The build must have compiled SDL (not X11/EGL) as its video backend.
+          grep -q 'HAVE_SDL' CMakeFiles/moonlight.dir/flags.make
+          ! grep -q 'HAVE_X11\|HAVE_PI\|HAVE_AML\|HAVE_IMX\|HAVE_ROCKCHIP\|HAVE_MMAL' \
+            CMakeFiles/moonlight.dir/flags.make
+
+      - name: Collect the engine
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/engine-out"
+          LIBS="$OUT/libs"
+          rm -rf "$OUT"
+          mkdir -p "$LIBS"
+          B="$MOONLIGHT_SRC/build"
+          cp "$B/moonlight" "$OUT/"
+          cp "$B/libgamestream/libmoonlight-common.so"* "$LIBS/"
+          cp "$B/libgamestream/libgamestream.so"* "$LIBS/"
+          cp "$PREFIX"/lib/libssl.so.3 "$LIBS/"
+          cp "$PREFIX"/lib/libcrypto.so.3 "$LIBS/"
+          cp "$PREFIX"/lib/libcurl.so.4 "$LIBS/"
+          cp "$PREFIX"/lib/libavcodec.so* "$PREFIX"/lib/libavutil.so* \
+             "$PREFIX"/lib/libswresample.so* "$LIBS/"
+
+          # Same skip list as spruce build.sh: glibc, the C++ runtime, and the
+          # libraries the device image provides (SDL2, ALSA, udev, ...).
+          SKIP_LIBS="linux-vdso|ld-linux|libc\.so|libm\.so|libdl\.so|libpthread\.so|librt\.so|libgcc_s|libstdc\+\+|libSDL2|libasound|libudev|libdrm|libwayland|libEGL|libGLES|libMali|libz\.so"
+          collect_deps() {
+            local binary="$1" lib src
+            "$CROSS_TRIPLE-readelf" -d "$binary" | grep NEEDED | sed 's/.*\[\(.*\)\]/\1/' |
+            while read -r lib; do
+              [ -f "$LIBS/$lib" ] && continue
+              echo "$lib" | grep -qE "$SKIP_LIBS" && continue
+              # $SYSROOT first so a sysroot lib never picks up a host copy.
+              src=$(find "$SYSROOT/usr/lib" "$PREFIX/lib" -maxdepth 1 -name "$lib" | head -1)
+              if [ -z "$src" ]; then
+                echo "ERROR: $lib (needed by $(basename "$binary")) not found" >&2
+                exit 1
+              fi
+              cp -L "$src" "$LIBS/$lib"
+              echo "  collected $lib"
+              collect_deps "$LIBS/$lib"
+            done
+          }
+          collect_deps "$OUT/moonlight"
+          for lib in "$LIBS"/*.so*; do collect_deps "$lib"; done
+
+          # One file per SONAME, then strip, as spruce does.
+          for so in "$LIBS"/*.so*; do
+            [ -f "$so" ] || continue
+            base=$(basename "$so")
+            soname=$("$CROSS_TRIPLE-readelf" -d "$so" | sed -n 's/.*SONAME.*\[\(.*\)\].*/\1/p')
+            if { [ -n "$soname" ] && [ "$base" != "$soname" ]; } ||
+               { [ -z "$soname" ] && [ "${base##*.}" = so ]; }; then
+              rm -f "$so"
+            fi
+          done
+          "$CROSS_TRIPLE-strip" -s "$OUT/moonlight" "$LIBS"/*.so*
+          ls -la "$OUT" "$LIBS"
+
+      - name: Verify the artifact
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/engine-out"
+          LIBS="$OUT/libs"
+          readelf() { "$CROSS_TRIPLE-readelf" "$@"; }
+          echo "== ELF"
+          file "$OUT/moonlight" "$LIBS"/*
+          readelf -h "$OUT/moonlight" | grep -q 'AArch64'
+          readelf -l "$OUT/moonlight" | grep -q 'interpreter: /lib/ld-linux-aarch64.so.1'
+          echo "max glibc version needed: $(readelf -V "$OUT/moonlight" "$LIBS"/* | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)"
+          echo "max glibc version provided by the sysroot: $(readelf -V "$SYSROOT/lib/libc.so.6" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1)"
+          echo "== NEEDED"
+          readelf -d "$OUT/moonlight" | grep NEEDED
+
+          echo "== patches in the source the binary was built from"
+          grep -n '^#define SDL_BUFFER_FRAMES' "$MOONLIGHT_SRC/src/sdl.h"
+          grep -q '^#define SDL_BUFFER_FRAMES 1$' "$MOONLIGHT_SRC/src/sdl.h"
+          grep -q 'MOONLIGHT_LATENCY_DEBUG' "$MOONLIGHT_SRC/src/sdl.c"
+
+          echo "== patch 1: the skip check compiled against the patched header"
+          # src/sdl.c includes src/sdl.h; preprocess it exactly as the build
+          # does and show the constant the compiler saw in sdl_loop.
+          "$CC" -E -DHAVE_SDL -I"$MOONLIGHT_SRC/src" -I"$MOONLIGHT_SRC/build" \
+            $(pkg-config --cflags sdl2) "$MOONLIGHT_SRC/src/sdl.c" > /tmp/sdl.i
+          grep -oE 'sdlCurrentFrame <= sdlNextFrame - [0-9]+' /tmp/sdl.i
+          grep -q 'sdlCurrentFrame <= sdlNextFrame - 1' /tmp/sdl.i
+          ! grep -q 'sdlCurrentFrame <= sdlNextFrame - 2' /tmp/sdl.i
+          "$CC" -E -DHAVE_SDL -I"$MOONLIGHT_SRC/src" -I"$MOONLIGHT_SRC/build" \
+            $(pkg-config --cflags sdl2) "$MOONLIGHT_SRC/src/video/sdl.c" > /tmp/video_sdl.i
+          grep -oE 'ffmpeg_init\(videoFormat, width, height, SLICE_THREADING, [0-9]+, SLICES_PER_FRAME\)' /tmp/video_sdl.i
+          grep -q 'SLICE_THREADING, 1, SLICES_PER_FRAME' /tmp/video_sdl.i
+
+          echo "== patch 2: latency measurement compiled in"
+          # The compiled object references the string it prints and the
+          # environment variable it reads.
+          objdump -s -j .rodata "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
+            tr -d '\n' | grep -oE 'client latency recv->present: avg %(l|ll)?u min %(l|ll)?u max %(l|ll)?u \(%d frames\)'
+          strings "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" | grep -x 'MOONLIGHT_LATENCY_DEBUG'
+          "$CROSS_TRIPLE-readelf" -s "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
+            grep -qE 'UND +LiGetMillis|UND +SDL_RenderPresent'
+          echo "== patch 2: present path calls the reporter"
+          "$CROSS_TRIPLE-objdump" -d --no-show-raw-insn "$MOONLIGHT_SRC/build/CMakeFiles/moonlight.dir/src/sdl.c.o" |
+            grep -B2 -A2 'bl.*<SDL_RenderPresent' | head
+
+          echo "== closure"
+          CROSS_TRIPLE="$CROSS_TRIPLE" python3 "$GITHUB_WORKSPACE/scripts/nextui/check-libs.py" \
+            "$GITHUB_WORKSPACE/engine-out" --sysroot "$SYSROOT"
+
+      - name: Dry-run the engine through qemu-user
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/engine-out"
+          # The device glibc comes from the vendor sysroot itself (2.28), the
+          # same one the engine is built against.
+          out=$(QEMU_LD_PREFIX="$SYSROOT" \
+                LD_LIBRARY_PATH="$OUT/libs:$SYSROOT/lib:$SYSROOT/usr/lib:$SYSROOT/usr/lib/nextui" \
+                SDL_VIDEODRIVER=dummy \
+                qemu-aarch64-static "$OUT/moonlight" --version 2>&1)
+          echo "$out"
+          echo "$out" | grep -q '^Moonlight Embedded 2\.7\.0'
+          out=$(QEMU_LD_PREFIX="$SYSROOT" \
+                LD_LIBRARY_PATH="$OUT/libs:$SYSROOT/lib:$SYSROOT/usr/lib:$SYSROOT/usr/lib/nextui" \
+                SDL_VIDEODRIVER=dummy \
+                qemu-aarch64-static "$OUT/moonlight" 2>&1 | head -20)
+          echo "$out"
+          echo "$out" | grep -q 'Options:'
+          echo "$out" | grep -q 'SDL'
+
+      - name: Write the manifest
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/engine-out"
+          PAK="$GITHUB_WORKSPACE/Tools/tg5040/Moonlight.pak"
+          {
+            echo "# moonlight-embedded engine for tg5040"
+            echo "moonlight-embedded: $MOONLIGHT_COMMIT (2.7.0)"
+            echo "openssl: $OPENSSL_VERSION  curl: $CURL_VERSION  ffmpeg: $FFMPEG_VERSION"
+            echo "toolchain: gcc 8.3.0 aarch64-nextui-linux-gnu, glibc 2.28 sysroot, SDL2 $(pkg-config --modversion sdl2) headers"
+            echo "workflow: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            echo
+            echo "## Replacement mapping (artifact -> pak path)"
+            echo "moonlight -> bin/moonlight"
+            echo "libs/* -> bin/libs/*"
+            echo
+            echo "## Files"
+            ( cd "$OUT" && sha256sum moonlight libs/* | sed 's|  libs/|  |; s|  moonlight|  bin/moonlight|; s|^\([0-9a-f]*\)  \([^/b]\)|\1  bin/libs/\2|' )
+            echo
+            echo "## Replaced (present in the current pak, differs from this build)"
+            echo "| pak file | current sha256 | new sha256 |"
+            echo "|---|---|---|"
+            for f in "$OUT/moonlight" "$OUT"/libs/*; do
+              name=$(basename "$f")
+              pak_file="$PAK/bin/libs/$name"
+              [ "$name" = moonlight ] && pak_file="$PAK/bin/moonlight"
+              old=-
+              [ -f "$pak_file" ] && old=$(sha256sum "$pak_file" | cut -d' ' -f1)
+              new=$(sha256sum "$f" | cut -d' ' -f1)
+              [ "$old" = "$new" ] && continue
+              echo "| bin/${pak_file#$PAK/bin/} | $old | $new |"
+            done
+            echo
+            echo "## Not shipped by this build (keep the pak copies)"
+            for f in "$PAK"/bin/libs/*.so*; do
+              name=$(basename "$f")
+              [ -f "$OUT/libs/$name" ] || echo "bin/libs/$name"
+            done
+          } > "$OUT/manifest.txt"
+          cat "$OUT/manifest.txt"
+          { echo "### engine build"; echo '```'; cat "$OUT/manifest.txt"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Package the artifact
+        run: |
+          set -e
+          OUT="$GITHUB_WORKSPACE/engine-out"
+          cp -r "$GITHUB_WORKSPACE"/engine/patches "$OUT/patches"
+          mkdir -p "$OUT/logs"
+          cp "$MOONLIGHT_SRC/build/build.log" "$OUT/logs/"
+          cp "$MOONLIGHT_SRC/build/CMakeFiles/CMakeOutput.log" "$OUT/logs/" 2>/dev/null || true
+          cp "$MOONLIGHT_SRC/build/CMakeFiles/CMakeError.log" "$OUT/logs/" 2>/dev/null || true
+          "$CC" -dM -E -x c /dev/null | grep -E '__GLIBC|__VERSION__' > "$OUT/logs/compiler-macros.txt" || true
+          grep -h 'SDL_BUFFER_FRAMES\|latency' "$MOONLIGHT_SRC/src/sdl.h" > "$OUT/logs/patched-sdl.h.txt"
+          tar -C "$OUT" -czf "$GITHUB_WORKSPACE/engine-aarch64.tar.gz" \
+            moonlight libs manifest.txt patches logs
+          ls -lh "$GITHUB_WORKSPACE/engine-aarch64.tar.gz"
+          sha256sum "$GITHUB_WORKSPACE/engine-aarch64.tar.gz"
+
+      - name: Upload the engine
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-aarch64
+          path: engine-aarch64.tar.gz
+          if-no-files-found: error
+
+      - name: Upload build logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: engine-build-logs
+          path: |
+            /opt/engine-src/moonlight-embedded/build/build.log
+            /opt/engine-src/moonlight-embedded/build/CMakeFiles/CMakeOutput.log
+            /opt/engine-src/moonlight-embedded/build/CMakeFiles/CMakeError.log
+          if-no-files-found: ignore

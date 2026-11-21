@@ -1,0 +1,138 @@
+SDL backend: optional client latency measurement (network receive -> present)
+
+When MOONLIGHT_LATENCY_DEBUG=1, the SDL backend records the receive time of
+each frame's first packet (DECODE_UNIT.receiveTimeMs, in LiGetMillis()
+milliseconds) and prints a line every 60 presented frames:
+
+  client latency recv->present: avg X min Y max Z (60 frames)
+
+This is the client half of end-to-end latency (network receive to
+SDL_RenderPresent, which swaps the frame in and returns once vsync has
+passed) and the A/B metric for SDL_BUFFER_FRAMES 2 vs 1 on device. It is off
+by default and adds no work to the frame path unless the variable is exactly
+"1".
+
+Applies after sdl-buffer-1.patch on moonlight-embedded
+274d3db34da764344a7a402ee74e6080350ac0cd.
+
+diff --git a/src/sdl.c b/src/sdl.c
+index 25567de..5fe06be 100644
+--- a/src/sdl.c
++++ b/src/sdl.c
+@@ -24,6 +24,8 @@
+ 
+ #include <Limelight.h>
+ 
++#include <inttypes.h>
++
+ static bool done;
+ static int fullscreen_flags;
+ 
+@@ -35,9 +37,42 @@ SDL_mutex *mutex;
+ 
+ int sdlCurrentFrame, sdlNextFrame;
+ 
++bool sdlLatencyDebug;
++uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SAMPLES];
++int sdlLatencyCount;
++
++/* Client-side latency: LiGetMillis() at SDL_RenderPresent minus the receive
++   time of the frame's first packet. Only the networking thread writes
++   sdlLatencyCount; the SDL thread reads it and writes every 60 frames. */
++static void sdl_latency_presented() {
++  if (!sdlLatencyDebug)
++    return;
++
++  uint64_t now = LiGetMillis();
++  int i;
++  uint64_t sum = 0, min = UINT64_MAX, max = 0;
++  for (i = 0; i < sdlLatencyCount; i++) {
++    uint64_t latency = now - sdlLatencyReceiveMs[i];
++    sum += latency;
++    if (latency < min)
++      min = latency;
++    if (latency > max)
++      max = latency;
++  }
++
++  if (sdlLatencyCount > 0)
++    printf("client latency recv->present: avg %" PRIu64 " min %" PRIu64 " max %" PRIu64 " (%d frames)\n",
++           sum / sdlLatencyCount, min, max, sdlLatencyCount);
++
++  sdlLatencyCount = 0;
++}
++
+ void sdl_init(int width, int height, bool fullscreen) {
+   sdlCurrentFrame = sdlNextFrame = 0;
+ 
++  const char* latencyDebug = getenv("MOONLIGHT_LATENCY_DEBUG");
++  sdlLatencyDebug = latencyDebug != NULL && latencyDebug[0] == '1' && latencyDebug[1] == '\0';
++
+   if(SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+     fprintf(stderr, "Could not initialize SDL - %s\n", SDL_GetError());
+     exit(1);
+@@ -106,6 +141,7 @@ void sdl_loop() {
+             SDL_RenderClear(renderer);
+             SDL_RenderCopy(renderer, bmp, NULL, NULL);
+             SDL_RenderPresent(renderer);
++            sdl_latency_presented();
+           } else
+             fprintf(stderr, "Couldn't lock mutex\n");
+         }
+diff --git a/src/sdl.h b/src/sdl.h
+index 65345ba..f22cd17 100644
+--- a/src/sdl.h
++++ b/src/sdl.h
+@@ -22,6 +22,7 @@
+ #include <SDL.h>
+ 
+ #include <stdbool.h>
++#include <stdint.h>
+ 
+ #define SDL_NOTHING 0
+ #define SDL_QUIT_APPLICATION 1
+@@ -39,4 +40,11 @@ void sdl_loop();
+ extern SDL_mutex *mutex;
+ extern int sdlCurrentFrame, sdlNextFrame;
+ 
++/* Per-frame client latency (network receive -> SDL_RenderPresent) measured by
++   src/video/sdl.c and reported by src/sdl.c when MOONLIGHT_LATENCY_DEBUG=1. */
++#define SDL_LATENCY_SAMPLES 60
++extern bool sdlLatencyDebug;
++extern uint64_t sdlLatencyReceiveMs[SDL_LATENCY_SAMPLES];
++extern int sdlLatencyCount;
++
+ #endif /* HAVE_SDL */
+diff --git a/src/video/sdl.c b/src/video/sdl.c
+index 1a7f6cf..2b45820 100644
+--- a/src/video/sdl.c
++++ b/src/video/sdl.c
+@@ -33,6 +33,7 @@
+ 
+ static void* ffmpeg_buffer;
+ static size_t ffmpeg_buffer_size;
++static uint64_t last_receive_ms;
+ 
+ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, void* context, int drFlags) {
+   if (ffmpeg_init(videoFormat, width, height, SLICE_THREADING, SDL_BUFFER_FRAMES, SLICES_PER_FRAME) < 0) {
+@@ -53,6 +54,9 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+   PLENTRY entry = decodeUnit->bufferList;
+   int length = 0;
+ 
++  if (sdlLatencyDebug)
++    last_receive_ms = decodeUnit->receiveTimeMs;
++
+   ensure_buf_size(&ffmpeg_buffer, &ffmpeg_buffer_size, decodeUnit->fullLength + AV_INPUT_BUFFER_PADDING_SIZE);
+ 
+   while (entry != NULL) {
+@@ -72,6 +76,10 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+     event.user.code = SDL_CODE_FRAME;
+     event.user.data1 = &frame->data;
+     event.user.data2 = &frame->linesize;
++    if (sdlLatencyDebug && sdlLatencyCount < SDL_LATENCY_SAMPLES) {
++      sdlLatencyReceiveMs[sdlLatencyCount] = last_receive_ms;
++      sdlLatencyCount++;
++    }
+     SDL_PushEvent(&event);
+   }
+   SDL_UnlockMutex(mutex);
