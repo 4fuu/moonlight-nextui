@@ -259,7 +259,8 @@ jobs:
 
       - name: Provide avahi-client for the build
         run: |
-          set -e
+          set -ex
+          echo "avahi step start: $(pwd) $(whoami)"
           # The vendor sysroot has no Avahi, and moonlight's libgamestream
           # requires avahi-client (mDNS host discovery, which spruce gets from
           # libavahi-client-dev:arm64). Mirror that package's build interface:
