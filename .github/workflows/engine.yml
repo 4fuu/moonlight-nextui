@@ -356,6 +356,9 @@ jobs:
           mkdir -p "$PREFIX/lib/pulseaudio"
           ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/libpulsecommon-13.99.so" \
             "$PREFIX/lib/pulseaudio/libpulsecommon-13.99.so"
+          # libpulsecommon needs libsystemd (sd_is_socket_*) and, without an
+          # X11 build, nothing else: the bundled libsystemd is the device's.
+          ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/libsystemd.so.0" "$PREFIX/lib/libsystemd.so"
           ls "$PREFIX/lib/libpulse"*
 
       - name: Build moonlight-embedded
