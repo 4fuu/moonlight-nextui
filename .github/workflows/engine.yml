@@ -391,7 +391,9 @@ jobs:
             cp "/tmp/focal/root/usr/include/$h" "$PREFIX/include/$h"
           done
           for lib in libsystemd.so.0 libxcb.so.1 libXau.so.6; do
-            cp -L "/tmp/focal/root/lib/aarch64-linux-gnu/$lib" "$PREFIX/lib/$lib"
+            src=$(find /tmp/focal/root -name "$lib" | head -1)
+            test -n "$src"
+            cp -L "$src" "$PREFIX/lib/$lib"
           done
           for lib in libsystemd libxcb libXau; do
             ln -sf "$PREFIX/lib/$lib.so."* "$PREFIX/lib/$lib.so"
