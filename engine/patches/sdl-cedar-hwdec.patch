@@ -16,7 +16,7 @@ The renderer callbacks keep CAPABILITY_DIRECT_SUBMIT, as with FFmpeg.
 decode loop, pending-picture accounting, PPS/AUD frame closing, stall rebuild
 and DR_NEED_IDR handling are ported from isalin/moonlight-tsp
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e724721..3e079a0 100644
+index e724721..beb3b3d 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -24,6 +24,9 @@ find_package(Rockchip)
@@ -29,7 +29,7 @@ index e724721..3e079a0 100644
  option(ENABLE_FFMPEG "Compile FFMPEG support" ON)
  option(ENABLE_X11 "Compile X11 support (requires ENABLE_FFMPEG)" ON)
  option(ENABLE_CEC "Compile CEC support" ON)
-@@ -83,6 +86,13 @@ SET(GAMESTREAM_INCLUDE_DIR ./libgamestream)
+@@ -83,9 +86,22 @@ SET(GAMESTREAM_INCLUDE_DIR ./libgamestream)
  
  include_directories("${PROJECT_BINARY_DIR}")
  
@@ -43,7 +43,16 @@ index e724721..3e079a0 100644
  add_subdirectory(libgamestream)
  
  add_executable(moonlight ${SRC_LIST})
-@@ -169,7 +179,7 @@ if (SOFTWARE_FOUND)
++# cedar_sync.c exports SemTimedWait for the vendor libraries' dynamic lookup
++# (libcdc_base/libsbm call it through their PLT). The tg5040 binutils has no
++# --export-dynamic-symbol, so the whole executable exports its symbols.
++if (ENABLE_CEDAR)
++  set_target_properties(moonlight PROPERTIES ENABLE_EXPORTS ON)
++endif()
+ target_link_libraries(moonlight m)
+ target_link_libraries(moonlight gamestream)
+ 
+@@ -169,7 +185,7 @@ if (SOFTWARE_FOUND)
    if(SDL_FOUND)
      list(APPEND MOONLIGHT_DEFINITIONS HAVE_SDL)
      list(APPEND MOONLIGHT_OPTIONS SDL)
@@ -442,10 +451,10 @@ index 0000000..7e14d30
 +#endif
 diff --git a/src/cedar/cedar_sync.c b/src/cedar/cedar_sync.c
 new file mode 100644
-index 0000000..9c6e2ac
+index 0000000..8c74686
 --- /dev/null
 +++ b/src/cedar/cedar_sync.c
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,165 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#ifndef _GNU_SOURCE
 +#define _GNU_SOURCE
@@ -508,15 +517,28 @@ index 0000000..9c6e2ac
 + * binary with -rdynamic and libcdc_base binds to it anyway; the symbol is
 + * visible by default either way.
 + */
++/*
++ * The exported name is only a trampoline: the engine's own callers (the
++ * cedar_sync_seq/cedar_sync_wait pair in cedar_sdl.c) must keep running the
++ * interposed implementation even when TSP_SEMWAIT=vendor forwards the vendor
++ * library's calls back to the vendor function, or the decoder would wait on
++ * a sequence number nobody advances.
++ */
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
++
 +__attribute__((visibility("default"))) int SemTimedWait(sem_t *sem,
 +                                                         int64_t time_ms)
 +{
-+    struct timespec ts;
-+    int r;
-+
 +    pthread_once(&mode_once, pick_mode);
 +    if (vendor_fn != NULL)
 +        return vendor_fn(sem, time_ms);
++    return cedar_sem_timed_wait(sem, time_ms);
++}
++
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms)
++{
++    struct timespec ts;
++    int r;
 +
 +    atomic_fetch_add_explicit(&n_calls, 1, memory_order_relaxed);
 +    if (sem_trywait(sem) == 0)
@@ -600,14 +622,15 @@ index 0000000..9c6e2ac
 +}
 diff --git a/src/cedar/cedar_sync.h b/src/cedar/cedar_sync.h
 new file mode 100644
-index 0000000..e6c9cf8
+index 0000000..5397d32
 --- /dev/null
 +++ b/src/cedar/cedar_sync.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,51 @@
 +/* SPDX-License-Identifier: GPL-3.0-or-later */
 +#ifndef MOONLIGHT_TSP_CEDAR_SYNC_H
 +#define MOONLIGHT_TSP_CEDAR_SYNC_H
 +
++#include <semaphore.h>
 +#include <stdint.h>
 +
 +/*
@@ -628,6 +651,12 @@ index 0000000..e6c9cf8
 + * Set TSP_SEMWAIT=vendor in the environment to forward to the vendor
 + * implementation (A/B testing).
 + */
++
++/*
++ * The interposed wait itself, without the vendor forwarding switch; the
++ * exported SemTimedWait() is a trampoline around it.
++ */
++int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
 +
 +/* Current parser-idle sequence number. Take it before submitting. */
 +unsigned cedar_sync_seq(void);
@@ -927,10 +956,10 @@ index ac21082..6cc6ead 100644
        fprintf(stderr, "Platform '%s' not found\n", config.platform);
 diff --git a/src/video/cedar_sdl.c b/src/video/cedar_sdl.c
 new file mode 100644
-index 0000000..87977c0
+index 0000000..052a9da
 --- /dev/null
 +++ b/src/video/cedar_sdl.c
-@@ -0,0 +1,450 @@
+@@ -0,0 +1,456 @@
 +/*
 + * Cedar hardware decode for the SDL backend.
 + *
@@ -982,6 +1011,7 @@ index 0000000..87977c0
 +  struct segs segs;
 +  unsigned long no_picture_run;
 +  int pending;              /* submitted frames not yet decoded */
++  uint64_t receive_ms;      /* receive time of the frame being decoded */
 +  int logged;               /* one-off reports already made */
 +  int format_warned;
 +
@@ -1261,6 +1291,10 @@ index 0000000..87977c0
 +  return 1;
 +}
 +
++uint64_t cedar_sdl_receive_ms(void) {
++  return C.receive_ms;
++}
++
 +void cedar_sdl_dump_stats(void) {
 +  unsigned long n = C.frames;
 +
@@ -1305,6 +1339,7 @@ index 0000000..87977c0
 +  else if (C.pps_len > 0)
 +    segs_add(&C.segs, C.pps, C.pps_len);
 +
++  C.receive_ms = du->receiveTimeMs;
 +  seq = cedar_sync_seq();
 +  t_submit = now_ns();
 +  if (cedar_submit(C.dec, C.segs.v, C.segs.n, pts) != 0) {
@@ -1383,10 +1418,10 @@ index 0000000..87977c0
 +}
 diff --git a/src/video/cedar_sdl.h b/src/video/cedar_sdl.h
 new file mode 100644
-index 0000000..7680d6b
+index 0000000..cf66bc3
 --- /dev/null
 +++ b/src/video/cedar_sdl.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,58 @@
 +/*
 + * Cedar hardware decode feeding the SDL YV12 texture.
 + *
@@ -1436,11 +1471,17 @@ index 0000000..7680d6b
 + */
 +int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]);
 +
++/*
++ * Receive time (LiGetMillis) of the decode unit behind the frame last handed
++ * out by cedar_sdl_frame(), for the latency report in src/sdl.c.
++ */
++uint64_t cedar_sdl_receive_ms(void);
++
 +void cedar_sdl_dump_stats(void);
 +
 +#endif
 diff --git a/src/video/sdl.c b/src/video/sdl.c
-index 32bdec6..68021c2 100644
+index 70640b7..12b79d7 100644
 --- a/src/video/sdl.c
 +++ b/src/video/sdl.c
 @@ -19,6 +19,7 @@
@@ -1459,9 +1500,9 @@ index 32bdec6..68021c2 100644
  
  #define SLICES_PER_FRAME 4
  
-@@ -35,7 +37,28 @@ static void* ffmpeg_buffer;
- static size_t ffmpeg_buffer_size;
- static uint64_t last_receive_ms;
+@@ -36,7 +38,28 @@ static size_t ffmpeg_buffer_size;
+ /* Receive time of the frame the event below is about, for the latency report. */
+ static uint64_t latency_receive_ms;
  
 +/*
 + * MOONLIGHT_HWDEC=1 decodes with the device's Cedar VPU (tg5040). Anything
@@ -1488,7 +1529,7 @@ index 32bdec6..68021c2 100644
    if (ffmpeg_init(videoFormat, width, height, SLICE_THREADING, SDL_BUFFER_FRAMES, SLICES_PER_FRAME) < 0) {
      fprintf(stderr, "Couldn't initialize video decoding\n");
      return -1;
-@@ -47,6 +70,11 @@ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, voi
+@@ -48,6 +71,11 @@ static int sdl_setup(int videoFormat, int width, int height, int redrawRate, voi
  }
  
  static void sdl_cleanup() {
@@ -1500,30 +1541,33 @@ index 32bdec6..68021c2 100644
    ffmpeg_destroy();
  }
  
-@@ -54,6 +82,26 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
+@@ -55,6 +83,29 @@ static int sdl_submit_decode_unit(PDECODE_UNIT decodeUnit) {
    PLENTRY entry = decodeUnit->bufferList;
    int length = 0;
  
 +  /* YV12 planes for the decoded picture, passed to the frame event below. */
 +  static unsigned char* cedar_planes[3];
 +  static int cedar_linesize[3];
++  static uint64_t cedar_receive_ms;
 +
 +  if (hwdec) {
 +    int status = cedar_sdl_submit(decodeUnit);
 +
 +    if (cedar_sdl_frame(cedar_planes, cedar_linesize)) {
 +      sdlNextFrame++;
++      cedar_receive_ms = cedar_sdl_receive_ms();
 +
 +      SDL_Event event;
 +      event.type = SDL_USEREVENT;
 +      event.user.code = SDL_CODE_FRAME;
 +      event.user.data1 = cedar_planes;
-+      event.user.data2 = cedar_linesize;
++      /* The frame's receive time, as the FFmpeg path passes it. */
++      event.user.data2 = sdlLatencyDebug ? &cedar_receive_ms : NULL;
 +      SDL_PushEvent(&event);
 +    }
 +    return status;
 +  }
 +
    if (sdlLatencyDebug)
-     last_receive_ms = decodeUnit->receiveTimeMs;
+     latency_receive_ms = decodeUnit->receiveTimeMs;
  

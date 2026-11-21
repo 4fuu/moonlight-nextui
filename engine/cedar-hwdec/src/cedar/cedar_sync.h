@@ -2,6 +2,7 @@
 #ifndef MOONLIGHT_TSP_CEDAR_SYNC_H
 #define MOONLIGHT_TSP_CEDAR_SYNC_H
 
+#include <semaphore.h>
 #include <stdint.h>
 
 /*
@@ -22,6 +23,12 @@
  * Set TSP_SEMWAIT=vendor in the environment to forward to the vendor
  * implementation (A/B testing).
  */
+
+/*
+ * The interposed wait itself, without the vendor forwarding switch; the
+ * exported SemTimedWait() is a trampoline around it.
+ */
+int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
 
 /* Current parser-idle sequence number. Take it before submitting. */
 unsigned cedar_sync_seq(void);

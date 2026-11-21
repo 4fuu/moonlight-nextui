@@ -60,15 +60,28 @@ static void announce_block(void)
  * binary with -rdynamic and libcdc_base binds to it anyway; the symbol is
  * visible by default either way.
  */
+/*
+ * The exported name is only a trampoline: the engine's own callers (the
+ * cedar_sync_seq/cedar_sync_wait pair in cedar_sdl.c) must keep running the
+ * interposed implementation even when TSP_SEMWAIT=vendor forwards the vendor
+ * library's calls back to the vendor function, or the decoder would wait on
+ * a sequence number nobody advances.
+ */
+int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms);
+
 __attribute__((visibility("default"))) int SemTimedWait(sem_t *sem,
                                                          int64_t time_ms)
 {
-    struct timespec ts;
-    int r;
-
     pthread_once(&mode_once, pick_mode);
     if (vendor_fn != NULL)
         return vendor_fn(sem, time_ms);
+    return cedar_sem_timed_wait(sem, time_ms);
+}
+
+int cedar_sem_timed_wait(sem_t *sem, int64_t time_ms)
+{
+    struct timespec ts;
+    int r;
 
     atomic_fetch_add_explicit(&n_calls, 1, memory_order_relaxed);
     if (sem_trywait(sem) == 0)

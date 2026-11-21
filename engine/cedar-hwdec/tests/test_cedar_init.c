@@ -15,6 +15,10 @@
  * keeps a record of a failed object that crashes the process at exit, so that
  * case is left to the device.)
  *
+ * With the same mocks it also covers the SemTimedWait interposition: the
+ * mock vendor library looks the symbol up with dlsym(RTLD_DEFAULT), as
+ * libcdc_base does, and must find our implementation.
+ *
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
@@ -22,6 +26,7 @@
 
 #include <Limelight.h>
 
+#include <dlfcn.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,7 +50,10 @@ static int failures;
  * cedarc_abi.h; only the fields the wrapper and the init path touch.
  */
 static const char mock_source[] =
+  "#define _GNU_SOURCE\n"
+  "#include <dlfcn.h>\n"
   "#include <stdint.h>\n"
+  "#include <stdio.h>\n"
   "#include <stdlib.h>\n"
   "#include <string.h>\n"
   "typedef struct { int32_t codec, w, h, fps, dur, ar, is3d, csdlen; char *csd;\n"
@@ -76,7 +84,10 @@ static const char mock_source[] =
   "int ReturnPicture(void *d, Picture *p) { (void)d; (void)p; return 0; }\n"
   "int ValidPictureNum(void *d, int i) { (void)d; (void)i; return 0; }\n"
   "int VideoStreamFrameNum(void *d, int i) { (void)d; (void)i; return 0; }\n"
-  "int AddVDPluginSingle(char *path) { (void)path; return 0; }\n";
+  "int AddVDPluginSingle(char *path) { (void)path; return 0; }\n"
+  "/* What libcdc_base does at its first wait. */\n"
+  "int mock_interposed(void) {\n"
+  "  return dlsym(RTLD_DEFAULT, \"SemTimedWait\") != NULL ? 1 : 0; }\n";
 
 static char libdir[512];
 
@@ -109,7 +120,7 @@ static void build_mocks(void) {
   write_file(src, mock_source);
 
   snprintf(cmd, sizeof(cmd),
-           "cc -shared -fPIC -O1 -o %s/libvdecoder.so %s && "
+           "cc -shared -fPIC -O1 -Wl,--no-as-needed -o %s/libvdecoder.so %s && "
            "cp %s/libvdecoder.so %s/libvideoengine.so && "
            ": > %s/libawh264.so && : > %s/libawh265.so",
            libdir, src, libdir, libdir, libdir, libdir);
@@ -142,6 +153,28 @@ int main(void) {
   CHECK(rc == 0);
   CHECK(cedar_sdl_available() == 1);
   cedar_sdl_destroy();
+
+  /* The vendor libraries must find our SemTimedWait through dlsym. */
+  {
+    char path[600];
+    void *h;
+
+    snprintf(path, sizeof(path), "%s/libvdecoder.so", libdir);
+    /*
+     * As on the device: the vendor libraries are loaded with RTLD_GLOBAL and
+     * find SemTimedWait in the executable's dynamic symbol table, which
+     * sdl-cedar-hwdec.patch guarantees (ENABLE_EXPORTS). This test binary
+     * needs the same -rdynamic when it is linked (see the workflow).
+     */
+    h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+    int (*interposed)(void);
+
+    CHECK(h != NULL);
+    interposed = (int (*)(void))dlsym(h, "mock_interposed");
+    CHECK(interposed != NULL);
+    if (interposed != NULL)
+      CHECK(interposed() == 1);
+  }
 
   /* HEVC is registered by the same mock plugin set. */
   rc = cedar_sdl_init(VIDEO_FORMAT_H265, 1024, 768, 60, err, sizeof(err));

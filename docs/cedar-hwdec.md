@@ -111,7 +111,9 @@ place:
    mock); unset, it is `/usr/lib`.
 2. **`cedar_sync.c`** — `sem_timedwait()` at an absolute `CLOCK_REALTIME`
    instead of `sem_clockwait()` (glibc 2.30+). The tg5040 toolchain sysroot is
-   glibc 2.28.
+   glibc 2.28. The exported `SemTimedWait` is a trampoline over
+   `cedar_sem_timed_wait()`, so the engine's own `cedar_sync_wait()` keeps
+   using the interposed implementation even under `TSP_SEMWAIT=vendor`.
 3. **`cedar_sdl.c`** — tsp's display half (G2D rotation, ION ring, disp2
    layer, vsync release) is gone; replaced by the picture → YV12 conversion.
    Decode loop, pending-picture accounting, PPS/AUD frame closing, stall
@@ -121,8 +123,19 @@ place:
    a deeper queue would only add latency (the device run measured the same
    3.7 ms decode with hold=3, so this trades nothing measurable for less
    buffering).
-5. **Spike build** — `-rdynamic` instead of
-   `-Wl,--export-dynamic-symbol=SemTimedWait` (binutils 2.31 in the toolchain).
+5. **Exporting `SemTimedWait`** — the engine must expose the symbol in its
+   *dynamic* table for libcdc_base/libsbm to bind to. tsp links with
+   `-Wl,--export-dynamic-symbol=SemTimedWait`; the tg5040 binutils 2.31 has no
+   such option, so the engine patch sets `ENABLE_EXPORTS` on the `moonlight`
+   target (`-rdynamic`), and `engine.yml` fails the build if the symbol is not
+   in `--dyn-syms`. Without it the vendor polling implementation runs: the
+   first device run showed `semwait NOT interposed calls=0` and 14 ms per
+   submit instead of the spike's 3.7 ms.
+6. **Latency report** (`latency-debug.patch`) — measured per frame at present
+   time (present time minus that frame's own receive time), aggregated over 60
+   samples with avg/min/p50/p95/max; the Cedar path feeds the same event field
+   as FFmpeg. See the patch header for why the earlier shared-counter design
+   reported the window span instead of the latency.
 
 ## Verification
 

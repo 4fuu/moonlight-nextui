@@ -49,6 +49,7 @@ static struct {
   struct segs segs;
   unsigned long no_picture_run;
   int pending;              /* submitted frames not yet decoded */
+  uint64_t receive_ms;      /* receive time of the frame being decoded */
   int logged;               /* one-off reports already made */
   int format_warned;
 
@@ -328,6 +329,10 @@ int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]) {
   return 1;
 }
 
+uint64_t cedar_sdl_receive_ms(void) {
+  return C.receive_ms;
+}
+
 void cedar_sdl_dump_stats(void) {
   unsigned long n = C.frames;
 
@@ -372,6 +377,7 @@ int cedar_sdl_submit(PDECODE_UNIT du) {
   else if (C.pps_len > 0)
     segs_add(&C.segs, C.pps, C.pps_len);
 
+  C.receive_ms = du->receiveTimeMs;
   seq = cedar_sync_seq();
   t_submit = now_ns();
   if (cedar_submit(C.dec, C.segs.v, C.segs.n, pts) != 0) {

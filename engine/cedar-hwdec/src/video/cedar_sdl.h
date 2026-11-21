@@ -47,6 +47,12 @@ int cedar_sdl_submit(PDECODE_UNIT du);
  */
 int cedar_sdl_frame(unsigned char* planes[3], int linesize[3]);
 
+/*
+ * Receive time (LiGetMillis) of the decode unit behind the frame last handed
+ * out by cedar_sdl_frame(), for the latency report in src/sdl.c.
+ */
+uint64_t cedar_sdl_receive_ms(void);
+
 void cedar_sdl_dump_stats(void);
 
 #endif

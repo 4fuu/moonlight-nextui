@@ -51,7 +51,9 @@ jobs:
           SOURCES="src/video/cedar_sdl.c src/cedar/cedar.c src/cedar/cedar_sync.c"
           for test in test_cedar_convert test_cedar_fallback test_cedar_init; do
             echo "== $test"
-            gcc $CFLAGS -Isrc -I/tmp/common-c/src \
+            # -rdynamic: the init test's mock vendor library resolves
+            # SemTimedWait from the executable, as the engine does.
+            gcc $CFLAGS -rdynamic -Isrc -I/tmp/common-c/src \
               -o "/tmp/$test" "tests/$test.c" $SOURCES -ldl -lpthread
             "/tmp/$test"
           done
