@@ -293,8 +293,12 @@ jobs:
           done
           # Link against the aarch64 Avahi the pak already bundles; the
           # closure collector ships it next to libgamestream.
+          # Both the unversioned link name and the SONAME link: -lavahi-common
+          # is dead-stripped (nothing calls it directly), and the linker then
+          # needs libavahi-common.so.3 because libavahi-client needs it.
           for lib in avahi-client avahi-common; do
             ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/lib$lib.so.3" "$PREFIX/lib/lib$lib.so"
+            ln -sf "$GITHUB_WORKSPACE/engine/bin/libs/lib$lib.so.3" "$PREFIX/lib/lib$lib.so.3"
           done
           PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH" PKG_CONFIG_SYSROOT_DIR= \
             pkg-config --cflags --libs avahi-client
@@ -309,7 +313,8 @@ jobs:
           # from-source libs are linked through CMAKE_PREFIX_PATH.
           export PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH"
           # -L$PREFIX/lib for the avahi -l flags; rpath-link so the linker
-          # resolves libavcodec's NEEDED libswresample in the same prefix.
+          # resolves NEEDED libraries (avahi's libavahi-common, libavcodec's
+          # libswresample) in the same prefix.
           export LDFLAGS="-Wl,--gc-sections -L$PREFIX/lib -Wl,-rpath-link,$PREFIX/lib"
           mkdir -p "$MOONLIGHT_SRC/build"
           cd "$MOONLIGHT_SRC/build"
