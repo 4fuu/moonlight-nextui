@@ -162,10 +162,9 @@ jobs:
           curl -fsSL --retry 3 -o openssl.tar.gz "https://www.openssl.org/source/openssl-$OPENSSL_VERSION.tar.gz"
           tar xzf openssl.tar.gz
           cd "openssl-$OPENSSL_VERSION"
-          # OpenSSL keeps its own defaults from the cross prefix (the image's
-          # CC/AR are not passed to Configure); no-tests is required for cross
-          # builds, and -fPIC is set explicitly because the AArch64 cross
-          # compiler does not default to it.
+          # As in spruce: Configure gets only the cross prefix, not CC/AR.
+          # no-tests is required for cross builds, and -fPIC is set explicitly
+          # because the AArch64 cross compiler does not default to it.
           ./Configure linux-aarch64 \
             --cross-compile-prefix="$CROSS_TRIPLE-" \
             --prefix="$PREFIX" \
@@ -173,7 +172,14 @@ jobs:
             shared \
             no-tests \
             -O3 -fPIC
-          make -j"$(nproc)" CC="$CROSS_TRIPLE-gcc -fPIC" build_sw
+          # The image exports CC/AR as absolute paths, which OpenSSL would
+          # prepend to its own cross prefix; override them for make only.
+          # build_sw covers libcrypto/libssl (install_sw would also build the
+          # apps, which need libcrypto from the target).
+          make -j"$(nproc)" build_sw \
+            CC="$CROSS_TRIPLE-gcc -fPIC" \
+            AR="$CROSS_TRIPLE-ar" \
+            RANLIB="$CROSS_TRIPLE-ranlib"
           make install_sw
           cd /build
 
