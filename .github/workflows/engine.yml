@@ -270,9 +270,12 @@ jobs:
           for h in avahi-client/client.h avahi-client/lookup.h; do
             curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
           done
-          for h in avahi-common/simple-watch.h avahi-common/malloc.h avahi-common/error.h \
-                   avahi-common/address.h avahi-common/defs.h avahi-common/cdecl.h; do
-            curl -fsSL --retry 3 -o "$AVAHI_INC/$h" "https://raw.githubusercontent.com/lathiat/avahi/v0.8/$h"
+          # The full avahi-common header set, as libavahi-common-dev installs it.
+          for h in address alternative cdecl dbus-watch-glue dbus defs domain error \
+                   gccmacro i18n llist malloc rlist simple-watch strlst thread-watch \
+                   timeval utf8 watch; do
+            curl -fsSL --retry 3 -o "$AVAHI_INC/avahi-common/$h.h" \
+              "https://raw.githubusercontent.com/lathiat/avahi/v0.8/avahi-common/$h.h"
           done
           # The image's pkg-config prefixes every -I with the sysroot, so
           # these files carry no -I: cmake finds the headers through
@@ -316,8 +319,6 @@ jobs:
             -DCMAKE_PREFIX_PATH="$PREFIX" \
             -DCMAKE_C_FLAGS="-O3 -ffunction-sections -fdata-sections -I$PREFIX/include" \
             -DENABLE_X11=OFF
-          ls -la "$PREFIX/include" "$PREFIX/include/avahi" "$PREFIX/include/avahi/avahi-client" || true
-          ls -d "$PREFIX"/include/avahi-client/*.h
           test -f "$PREFIX/include/avahi-client/client.h"
           make -j"$(nproc)" 2>&1 | tee build.log
           grep -E 'Found (libevdev|libudev|sdl2)|Found (ALSA|Opus|EXPAT|LibUUID)|Could NOT find CURL|Could NOT find EXPAT|Could NOT find OpenSSL' build.log || true
