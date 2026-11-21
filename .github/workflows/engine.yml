@@ -74,13 +74,13 @@ jobs:
           for attempt in 1 2 3; do
             if apt-get update &&
                apt-get install -y --no-install-recommends \
-                 build-essential bison file flex nasm ccache patch; then
+                 build-essential bison file flex nasm ccache patch curl; then
               break
             fi
             echo "apt attempt $attempt failed; retrying"
             sleep 15
           done
-          command -v ccache nasm bison file patch
+          command -v ccache nasm bison file patch curl
 
       # The image's toolchain package (crosstool-NG GCC 8.3.0, glibc 2.28) is
       # the one NextUI's own packages are built with; the matching sysroot SDK
