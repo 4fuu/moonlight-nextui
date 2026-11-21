@@ -309,7 +309,8 @@ jobs:
 
       - name: Provide pulse-simple for the build
         run: |
-          set -e
+          set -ex
+          echo "pulse step start"
           # The vendor sysroot has no PulseAudio headers either, and spruce
           # builds with libpulse-dev:arm64. Mirror that package's public
           # headers and libpulse-simple.pc, and link against the aarch64
