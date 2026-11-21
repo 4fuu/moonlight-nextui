@@ -321,6 +321,14 @@ static void install_stream_signals(void)
     sigaction(SIGQUIT, &action, &s_old_sigquit);
 }
 
+static void restore_menu_cpu_speed(void)
+{
+    if (ap_set_cpu_speed(AP_CPU_SPEED_MENU) == AP_OK)
+        ap_log("moonlight: CPU speed restored to menu after the stream");
+    else
+        ap_log("moonlight: warning: could not restore CPU speed after the stream");
+}
+
 static void restore_stream_signals(void)
 {
     sigaction(SIGTERM, &s_old_sigterm, NULL);
@@ -387,6 +395,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
     if (pid < 0) {
         ap_log("moonlight: failed to spawn engine");
         nextui_coop_stream_end();
+        restore_menu_cpu_speed();
         return -1;
     }
 
@@ -402,6 +411,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
             terminate_stream(pid, 1);
             reaped = true;
             restore_stream_signals();
+            restore_menu_cpu_speed();
             signal(sig, SIG_DFL);
             raise(sig);
             return -1;
@@ -439,10 +449,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
 
     nextui_coop_stream_end();
 
-    if (ap_set_cpu_speed(AP_CPU_SPEED_MENU) == AP_OK)
-        ap_log("moonlight: CPU speed restored to menu after the stream");
-    else
-        ap_log("moonlight: warning: could not restore CPU speed after the stream");
+    restore_menu_cpu_speed();
 
     if (quit_requested)
         return 0;
