@@ -326,9 +326,9 @@ jobs:
                    utf8 util volume xmalloc; do
             curl -fsSL --retry 3 -o "$PREFIX/include/pulse/$h.h" "$PULSE_URL/pulse/$h.h"
           done
-          curl -fsSL --retry 3 -o - "$PULSE_URL/pulse/version.h.in" |
-            sed -e "s/@PA_MAJOR@/13/; s/@PA_MINOR@/99/; s/@PA_MICRO@/1/" \
-            > "$PREFIX/include/pulse/version.h"
+          curl -fsSL --retry 3 -o /tmp/pulse-version.h.in "$PULSE_URL/pulse/version.h.in"
+          sed -e "s/@PA_MAJOR@/13/; s/@PA_MINOR@/99/; s/@PA_MICRO@/1/" \
+            /tmp/pulse-version.h.in > "$PREFIX/include/pulse/version.h"
           grep -E 'define PA_(MAJOR|MINOR|MICRO)' "$PREFIX/include/pulse/version.h"
           printf '%s\n' \
             "prefix=$PREFIX" \
