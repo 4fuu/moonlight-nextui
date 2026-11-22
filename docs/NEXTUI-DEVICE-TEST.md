@@ -12,7 +12,11 @@ and the exact key sequence.
 
 1. Install `dist/Moonlight.pakz` with NextUI's app installer (or unzip to
    `/Tools/tg5040/Moonlight.pak/`).
-2. Confirm `/Tools/tg5040/Moonlight.pak/launch.sh` is executable.
+   For manual extraction with PowerShell `Expand-Archive`, copy the `.pakz`
+   to a `.zip` filename first. It is already a ZIP archive; keep the `.pakz`
+   extension when using the NextUI installer.
+2. After a manual copy, confirm `launch.sh`, `moonlight-pak`, `shim/moonlight`,
+   and `bin/moonlight` in the installed pak are executable.
 3. Launch **Moonlight** from Tools.
 
 Expected:
@@ -22,17 +26,23 @@ Expected:
   `=== Moonlight.pak ... platform=tg5040`.
 - The log prints `path=` containing `Moonlight.pak/shim` and `bin/libs`.
 - `$SHARED_USERDATA_PATH/moonlight/` exists.
-- `bin/libs` has 35 libraries and `./bin/moonlight --version` (run from the
-  pak directory with `LD_LIBRARY_PATH=$PWD/bin/libs`) does not report a
-  missing shared library. v0.3.2 failed here on `libpulsecommon-13.99.so`.
+- `bin/libs` contains the bundled libraries. The engine loader check below
+  prints the Moonlight Embedded banner and usage without a missing shared
+  library error.
+
+Launching from Tools provides the runtime environment. A bare ADB shell
+does not: the engine needs the firmware SDL2 library in `/usr/trimui/lib`,
+and the wrapper also needs NextUI's `libsamplerate.so.0` in
+`/mnt/SDCARD/.system/tg5040/lib`. Use the ADB command below to check only the
+engine's loader; use Tools to test the wrapper and the C3 session.
 
 Commands:
 
 ```sh
 adb shell 'tail -n 40 /mnt/SDCARD/.userdata/tg5040/logs/Moonlight.txt'
 adb shell 'ls -l /mnt/SDCARD/.userdata/shared/moonlight /mnt/SDCARD/.userdata/shared/moonlight/keys'
-adb shell 'ls /mnt/SDCARD/Tools/tg5040/Moonlight.pak/bin/libs | wc -l'
-adb shell 'cd /mnt/SDCARD/Tools/tg5040/Moonlight.pak && LD_LIBRARY_PATH=$PWD/bin/libs ./bin/moonlight --version'
+adb shell 'ls /mnt/SDCARD/Tools/tg5040/Moonlight.pak/bin/libs'
+adb shell 'cd /mnt/SDCARD/Tools/tg5040/Moonlight.pak && LD_LIBRARY_PATH="$PWD/bin/libs:/usr/trimui/lib:/mnt/SDCARD/.system/tg5040/lib" ./bin/moonlight'
 ```
 
 ## 2. C3 session
