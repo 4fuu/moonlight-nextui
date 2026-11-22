@@ -14,14 +14,14 @@
  *      streaming and answers NEXTUI_OVERLAY_SYSTEM; after it exits, the menu
  *      owns the overlay again.
  *
- * The fake engine is a shell script the test writes into a temporary
- * directory prepended to PATH.
+ * Fake engines are installed in a temporary directory prepended to PATH.
  */
 
 #include "moonlight.h"
 #include "nextui_coop.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <signal.h>
 #include <stdio.h>
@@ -358,6 +358,25 @@ static void test_signal_terminates_engine(void)
         CHECK(pid_gone(engine, 4000), "engine is gone after SIGTERM");
 }
 
+static volatile sig_atomic_t quit_engine_log;
+
+static void quit_engine_shutdown(int sig)
+{
+    (void)sig;
+    _exit(write(quit_engine_log, "graceful\n", 9) == 9 ? 0 : 1);
+}
+
+static int run_quit_engine(const char* path)
+{
+    quit_engine_log = open(path, O_WRONLY | O_CREAT | O_APPEND, 0600);
+    if (quit_engine_log < 0 || signal(SIGTERM, quit_engine_shutdown) == SIG_ERR)
+        return 1;
+    if (dprintf(quit_engine_log, "%ld\n", (long)getpid()) < 0)
+        return 1;
+    for (;;)
+        pause();
+}
+
 static void test_quit_flag_terminates_engine(void)
 {
     printf("quit flag cleanup\n");
@@ -365,7 +384,14 @@ static void test_quit_flag_terminates_engine(void)
     char pid_path[640];
     snprintf(pid_path, sizeof(pid_path), "%s/quit-engine.pid", tmpdir);
     unlink(pid_path);
-    write_sleeper_engine(pid_path);
+    char engine_path[640], self[64];
+    snprintf(engine_path, sizeof(engine_path), "%s/moonlight", tmpdir);
+    snprintf(self, sizeof(self), "/proc/%ld/exe", (long)getpid());
+    unlink(engine_path);
+    if (symlink(self, engine_path) != 0 || setenv("MOONLIGHT_TEST_QUIT_LOG", pid_path, 1) != 0) {
+        CHECK(0, "quit test engine is installed");
+        return;
+    }
 
     stream_job job = { .cfg = base_config(), .rc = -1 };
     pthread_t thread;
@@ -384,8 +410,12 @@ static void test_quit_flag_terminates_engine(void)
 
     CHECK(job.rc == 0, "quit flag returns success");
     CHECK(nextui_coop_quit_requested(), "quit flag stays set");
+    char* log = read_file(pid_path);
+    CHECK(log && strstr(log, "\ngraceful\n") != NULL,
+          "engine handles SIGTERM and runs its shutdown path");
     if (engine > 0)
         CHECK(pid_gone(engine, 4000), "engine is gone after quit flag");
+    unsetenv("MOONLIGHT_TEST_QUIT_LOG");
 }
 
 static void test_cooperation_state(void)
@@ -422,6 +452,10 @@ static void test_cooperation_state(void)
 
 int main(void)
 {
+    const char* quit_log = getenv("MOONLIGHT_TEST_QUIT_LOG");
+    if (quit_log)
+        return run_quit_engine(quit_log);
+
     snprintf(tmpdir, sizeof(tmpdir), "/tmp/moonlight-spawn-test-XXXXXX");
     if (!mkdtemp(tmpdir)) {
         perror("mkdtemp");

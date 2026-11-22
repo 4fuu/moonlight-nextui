@@ -258,7 +258,7 @@ int ml_list_apps(const char *host, ml_app *apps, int max_apps, int *interrupt)
  * and redirects to bin/moonlight. No shell is involved, so app names with
  * spaces and quotes are passed as one argv element.
  */
-static pid_t spawn_stream(char *const argv[])
+static pid_t spawn_stream(char *const argv[], const sigset_t *old_mask)
 {
     pid_t pid = fork();
     if (pid < 0)
@@ -268,6 +268,7 @@ static pid_t spawn_stream(char *const argv[])
         setpgid(0, 0);
         signal(SIGINT, SIG_DFL);
         signal(SIGTERM, SIG_DFL);
+        sigprocmask(SIG_SETMASK, old_mask, NULL);
         execvp(argv[0], argv);
         _exit(127);
     }
@@ -385,7 +386,7 @@ int ml_stream(const ml_config *cfg, const char *app_name)
     sigaddset(&block, SIGQUIT);
     pthread_sigmask(SIG_BLOCK, &block, &old_mask);
 
-    pid_t pid = spawn_stream(argv);
+    pid_t pid = spawn_stream(argv, &old_mask);
     if (pid > 0) {
         register_engine(pid);
         install_stream_signals();
